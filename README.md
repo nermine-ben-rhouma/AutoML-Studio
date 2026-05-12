@@ -84,7 +84,7 @@ AutoML Studio est une application web complète qui permet à n'importe quel uti
 ```
 automl-studio-complet/
 ├── automl-backend/
-└── ml-generic/
+└── automl-frontend/
 ```
 
 ### 2. Installer le Back-End Python
@@ -407,11 +407,6 @@ react-dom 18
 
 ---
 
-## 👩‍💻 Développé dans le cadre du module
 
-**Machine Learning Avancée** — ING4 DS
-Professeure : Aroua Hedhili
-
----
 
 *AutoML Studio v1.0 — Application professionnelle ML avec React + FastAPI + MLflow*
