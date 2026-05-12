@@ -1,0 +1,19 @@
+{
+  "Private": 0.0009,
+  "Apps": 0.0155,
+  "Accept": 0.0115,
+  "Enroll": 0.0091,
+  "Top10perc": 0.8436,
+  "F.Undergrad": 0.0098,
+  "P.Undergrad": 0.0083,
+  "Outstate": 0.0091,
+  "Room.Board": 0.0102,
+  "Books": 0.0059,
+  "Personal": 0.0092,
+  "PhD": 0.0108,
+  "Terminal": 0.01,
+  "S.F.Ratio": 0.0082,
+  "perc.alumni": 0.0123,
+  "Expend": 0.0085,
+  "Grad.Rate": 0.0173
+}

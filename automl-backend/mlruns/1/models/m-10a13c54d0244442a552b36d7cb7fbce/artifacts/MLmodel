@@ -1,0 +1,23 @@
+artifact_path: file:///C:/Users/MSI GF63/automl-studio-complet/automl-backend/mlruns/1/models/m-10a13c54d0244442a552b36d7cb7fbce/artifacts
+flavors:
+  python_function:
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.sklearn
+    model_path: model.pkl
+    predict_fn: predict
+    python_version: 3.11.0
+  sklearn:
+    code: null
+    pickled_model: model.pkl
+    serialization_format: cloudpickle
+    sklearn_version: 1.8.0
+    skops_trusted_types: null
+mlflow_version: 3.12.0
+model_id: m-10a13c54d0244442a552b36d7cb7fbce
+model_size_bytes: 770
+model_uuid: m-10a13c54d0244442a552b36d7cb7fbce
+prompts: null
+run_id: 452355b7e89041e6bfde5e9cad76d605
+utc_time_created: '2026-05-11 20:55:28.502273'

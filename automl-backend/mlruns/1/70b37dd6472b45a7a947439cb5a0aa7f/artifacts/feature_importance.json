@@ -1,0 +1,19 @@
+{
+  "animal_name": 0.0258,
+  "hair": 0.0,
+  "feathers": 0.0,
+  "milk": 0.0,
+  "airborne": 0.0,
+  "aquatic": 0.0258,
+  "predator": 0.0,
+  "toothed": 0.05,
+  "backbone": 0.0,
+  "breathes": 0.0,
+  "venomous": 0.0062,
+  "fins": 0.0,
+  "legs": 0.0226,
+  "tail": 0.0,
+  "domestic": 0.0,
+  "catsize": 0.0,
+  "class_type": 0.8696
+}

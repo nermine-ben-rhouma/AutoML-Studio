@@ -1,0 +1,23 @@
+{
+  "ID": 0.2569,
+  "Date": 0.2586,
+  "Time": 0.0261,
+  "Event": 0.0006,
+  "Status": 0.0183,
+  "Latitude": 0.1353,
+  "Longitude": 0.1445,
+  "Maximum Wind": 0.0602,
+  "Minimum Pressure": 0.0502,
+  "Low Wind NE": 0.008,
+  "Low Wind SE": 0.0077,
+  "Low Wind SW": 0.0074,
+  "Low Wind NW": 0.0077,
+  "Moderate Wind NE": 0.0034,
+  "Moderate Wind SE": 0.0029,
+  "Moderate Wind SW": 0.0025,
+  "Moderate Wind NW": 0.0032,
+  "High Wind NE": 0.0017,
+  "High Wind SE": 0.0014,
+  "High Wind SW": 0.0017,
+  "High Wind NW": 0.0017
+}

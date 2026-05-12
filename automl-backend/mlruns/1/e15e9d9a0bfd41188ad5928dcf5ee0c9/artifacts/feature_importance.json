@@ -1,0 +1,10 @@
+{
+  "Pregnancies": 0.0845,
+  "Glucose": 0.276,
+  "BloodPressure": 0.0856,
+  "SkinThickness": 0.068,
+  "Insulin": 0.0724,
+  "BMI": 0.1595,
+  "DiabetesPedigreeFunction": 0.1267,
+  "Age": 0.1272
+}
