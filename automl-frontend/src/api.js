@@ -8,7 +8,13 @@ const BASE_URL = "http://localhost:8000";
 const handleResponse = async (res) => {
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || "Erreur serveur");
+    const detail = err.detail;
+    const message = typeof detail === "string"
+      ? detail
+      : Array.isArray(detail)
+        ? detail.map((d) => d.msg || d).join(", ")
+        : res.statusText;
+    throw new Error(message || "Erreur serveur");
   }
   return res.json();
 };

@@ -1,0 +1,16 @@
+# Python / MLflow
+automl-backend/venv/
+automl-backend/__pycache__/
+automl-backend/mlruns/
+automl-backend/mlflow.db
+automl-backend/mlflow.db-*
+
+# Node
+automl-frontend/node_modules/
+automl-frontend/build/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.env
+*.pyc

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { trainModels } from "../api";
 
 const ALGO_NAMES = {rf:"Random Forest",svm:"SVM",lr:"Logistic/Linear Reg.",knn:"KNN",dt:"Decision Tree",nb:"Naive Bayes",ridge:"Ridge",lasso:"Lasso",svr:"SVR"};
@@ -12,10 +12,13 @@ export default function Dashboard({ dataset, config, onReset, onNotif, onRefresh
   const [progress, setProgress]     = useState(0);
   const [trainInfo, setTrainInfo]   = useState(null);
   const [error, setError]           = useState(null);
+  const trainingStarted = useRef(false);
 
   const isClassif = config.taskType === "classification";
 
   useEffect(() => {
+    if (trainingStarted.current) return;
+    trainingStarted.current = true;
     runTraining();
   }, []);
 
@@ -50,9 +53,10 @@ export default function Dashboard({ dataset, config, onReset, onNotif, onRefresh
     }
   };
 
-  const best = results ? (isClassif
-    ? results.reduce((a,b) => a.accuracy > b.accuracy ? a : b)
-    : results.reduce((a,b) => a.r2 > b.r2 ? a : b)
+  // ✅ FIX: Vérifier que results est un tableau non vide avant réduire
+  const best = results && Array.isArray(results) && results.length > 0 ? (isClassif
+    ? results.reduce((a,b) => (a?.accuracy || 0) > (b?.accuracy || 0) ? a : b)
+    : results.reduce((a,b) => (a?.r2 || 0) > (b?.r2 || 0) ? a : b)
   ) : null;
 
   const exportCSV = () => {
@@ -140,7 +144,7 @@ export default function Dashboard({ dataset, config, onReset, onNotif, onRefresh
         </div>
       )}
 
-      {!loading && !error && results && (
+      {!loading && !error && results && best && (
         <>
           {/* BEST BANNER */}
           <div className="best-banner">
@@ -148,23 +152,23 @@ export default function Dashboard({ dataset, config, onReset, onNotif, onRefresh
               <div className="best-crown">🏆</div>
               <div>
                 <div className="best-label">Meilleur modèle</div>
-                <div className="best-name">{ALGO_ICONS[best.algo_id]} {best.algo_name}</div>
+                <div className="best-name">{ALGO_ICONS[best?.algo_id || "rf"]} {best?.algo_name || "N/A"}</div>
               </div>
             </div>
             <div className="best-scores">
               {isClassif ? (
                 <>
-                  <div className="best-score"><div className="bs-val">{(best.accuracy*100).toFixed(1)}%</div><div className="bs-lbl">Accuracy</div></div>
-                  <div className="best-score"><div className="bs-val">{best.f1.toFixed(3)}</div><div className="bs-lbl">F1-Score</div></div>
-                  <div className="best-score"><div className="bs-val">{best.auc.toFixed(3)}</div><div className="bs-lbl">AUC-ROC</div></div>
-                  <div className="best-score"><div className="bs-val">{best.cv_score.toFixed(3)}</div><div className="bs-lbl">CV Score</div></div>
+                  <div className="best-score"><div className="bs-val">{((best?.accuracy || 0)*100).toFixed(1)}%</div><div className="bs-lbl">Accuracy</div></div>
+                  <div className="best-score"><div className="bs-val">{(best?.f1 || 0).toFixed(3)}</div><div className="bs-lbl">F1-Score</div></div>
+                  <div className="best-score"><div className="bs-val">{(best?.auc || 0).toFixed(3)}</div><div className="bs-lbl">AUC-ROC</div></div>
+                  <div className="best-score"><div className="bs-val">{(best?.cv_score || 0).toFixed(3)}</div><div className="bs-lbl">CV Score</div></div>
                 </>
               ) : (
                 <>
-                  <div className="best-score"><div className="bs-val">{best.r2.toFixed(3)}</div><div className="bs-lbl">R²</div></div>
-                  <div className="best-score"><div className="bs-val">{best.rmse.toFixed(3)}</div><div className="bs-lbl">RMSE</div></div>
-                  <div className="best-score"><div className="bs-val">{best.mae.toFixed(3)}</div><div className="bs-lbl">MAE</div></div>
-                  <div className="best-score"><div className="bs-val">{best.cv_r2.toFixed(3)}</div><div className="bs-lbl">CV R²</div></div>
+                  <div className="best-score"><div className="bs-val">{(best?.r2 || 0).toFixed(3)}</div><div className="bs-lbl">R²</div></div>
+                  <div className="best-score"><div className="bs-val">{(best?.rmse || 0).toFixed(3)}</div><div className="bs-lbl">RMSE</div></div>
+                  <div className="best-score"><div className="bs-val">{(best?.mae || 0).toFixed(3)}</div><div className="bs-lbl">MAE</div></div>
+                  <div className="best-score"><div className="bs-val">{(best?.cv_r2 || 0).toFixed(3)}</div><div className="bs-lbl">CV R²</div></div>
                 </>
               )}
             </div>
@@ -188,16 +192,16 @@ export default function Dashboard({ dataset, config, onReset, onNotif, onRefresh
               <div className={`metrics-grid metrics-${isClassif ? 4 : 3}`}>
                 {isClassif ? (
                   <>
-                    <MetricCard emoji="🎯" label="Accuracy"  value={`${(best.accuracy*100).toFixed(1)}%`} color="green"/>
-                    <MetricCard emoji="⚖️" label="F1-Score"  value={best.f1.toFixed(3)} color="blue"/>
-                    <MetricCard emoji="🔍" label="Precision" value={best.precision.toFixed(3)} color="orange"/>
-                    <MetricCard emoji="📡" label="Recall"    value={best.recall.toFixed(3)} color="pink"/>
+                    <MetricCard emoji="🎯" label="Accuracy"  value={`${((best?.accuracy || 0)*100).toFixed(1)}%`} color="green"/>
+                    <MetricCard emoji="⚖️" label="F1-Score"  value={(best?.f1 || 0).toFixed(3)} color="blue"/>
+                    <MetricCard emoji="🔍" label="Precision" value={(best?.precision || 0).toFixed(3)} color="orange"/>
+                    <MetricCard emoji="📡" label="Recall"    value={(best?.recall || 0).toFixed(3)} color="pink"/>
                   </>
                 ) : (
                   <>
-                    <MetricCard emoji="📐" label="R²"   value={best.r2.toFixed(3)}   color="green"  delta="↑ meilleur proche de 1"/>
-                    <MetricCard emoji="📉" label="RMSE" value={best.rmse.toFixed(3)} color="blue"   delta="↓ meilleur proche de 0"/>
-                    <MetricCard emoji="📏" label="MAE"  value={best.mae.toFixed(3)}  color="orange" delta="↓ meilleur proche de 0"/>
+                    <MetricCard emoji="📐" label="R²"   value={(best?.r2 || 0).toFixed(3)}   color="green"  delta="↑ meilleur proche de 1"/>
+                    <MetricCard emoji="📉" label="RMSE" value={(best?.rmse || 0).toFixed(3)} color="blue"   delta="↓ meilleur proche de 0"/>
+                    <MetricCard emoji="📏" label="MAE"  value={(best?.mae || 0).toFixed(3)}  color="orange" delta="↓ meilleur proche de 0"/>
                   </>
                 )}
               </div>
@@ -207,15 +211,15 @@ export default function Dashboard({ dataset, config, onReset, onNotif, onRefresh
                   <div className="chart-title">{isClassif ? "🏆 Accuracy" : "📊 R²"} par algorithme</div>
                   <div className="bar-chart">
                     {/* FIX 3: key sur run_id (unique par run) plutôt que algo_id (peut se répéter) */}
-                    {[...results].sort((a,b) => isClassif ? b.accuracy - a.accuracy : b.r2 - a.r2).map((r, i) => {
-                      const val = isClassif ? r.accuracy : r.r2;
+                    {[...results].sort((a,b) => isClassif ? (b?.accuracy || 0) - (a?.accuracy || 0) : (b?.r2 || 0) - (a?.r2 || 0)).map((r, i) => {
+                      const val = isClassif ? (r?.accuracy || 0) : (r?.r2 || 0);
                       return (
                         <div className="bar-row" key={r.run_id}>
-                          <div className="bar-label">{ALGO_ICONS[r.algo_id]} {r.algo_name.split(" ")[0]}</div>
+                          <div className="bar-label">{ALGO_ICONS[r.algo_id]} {(r.algo_name || "").split(" ")[0]}</div>
                           <div className="bar-track">
                             <div className="bar-fill" style={{
                               width: `${Math.max(0, Math.min(100, val * 100))}%`,
-                              background: r.algo_id === best.algo_id
+                              background: r.algo_id === best?.algo_id
                                 ? "linear-gradient(90deg,#00a86b,#00c980)"
                                 : COLORS[i % COLORS.length]
                             }}>
@@ -234,8 +238,8 @@ export default function Dashboard({ dataset, config, onReset, onNotif, onRefresh
                   <div className="bar-chart">
                     {/* FIX 4: key sur run_id */}
                     {results.map((r, i) => {
-                      const tr  = isClassif ? r.train_accuracy : 1 - r.train_rmse / 10;
-                      const te  = isClassif ? r.accuracy : r.r2;
+                      const tr  = isClassif ? (r?.train_accuracy || 0) : Math.max(0, 1 - (r?.train_rmse || 10) / 10);
+                      const te  = isClassif ? (r?.accuracy || 0) : (r?.r2 || 0);
                       const gap = Math.abs(tr - te);
                       return (
                         <div key={r.run_id} style={{marginBottom:14}}>
@@ -266,9 +270,9 @@ export default function Dashboard({ dataset, config, onReset, onNotif, onRefresh
               </div>
 
               {/* FEATURE IMPORTANCE */}
-              {best.feature_importance && Object.keys(best.feature_importance).length > 0 && (
+              {best?.feature_importance && Object.keys(best.feature_importance).length > 0 && (
                 <div className="chart-card">
-                  <div className="chart-title">🏆 Feature Importance — {best.algo_name}</div>
+                  <div className="chart-title">🏆 Feature Importance — {best?.algo_name}</div>
                   <div className="bar-chart">
                     {/* FIX 6: key sur feat (nom de feature, stable et unique dans ce contexte) */}
                     {Object.entries(best.feature_importance).sort((a,b) => b[1]-a[1]).slice(0,10).map(([feat, val], i) => (
@@ -287,20 +291,20 @@ export default function Dashboard({ dataset, config, onReset, onNotif, onRefresh
               )}
 
               {/* CONFUSION MATRIX */}
-              {isClassif && best.confusion_matrix && (
+              {isClassif && best?.confusion_matrix && (
                 <div className="chart-card">
-                  <div className="chart-title">🔲 Matrice de Confusion — {best.algo_name}</div>
+                  <div className="chart-title">🔲 Matrice de Confusion — {best?.algo_name}</div>
                   <div className="cm-wrap">
                     <div className="confusion-matrix">
                       <div className="cm-header"/>
                       <div className="cm-header">Prédit : 0</div>
                       <div className="cm-header">Prédit : 1</div>
                       <div className="cm-header">Réel : 0</div>
-                      <div className="cm-cell cm-tn"><div className="cm-val">{best.confusion_matrix[0][0]}</div><div className="cm-pct">TN</div></div>
-                      <div className="cm-cell cm-fp"><div className="cm-val">{best.confusion_matrix[0][1]}</div><div className="cm-pct">FP</div></div>
+                      <div className="cm-cell cm-tn"><div className="cm-val">{best.confusion_matrix[0]?.[0] || 0}</div><div className="cm-pct">TN</div></div>
+                      <div className="cm-cell cm-fp"><div className="cm-val">{best.confusion_matrix[0]?.[1] || 0}</div><div className="cm-pct">FP</div></div>
                       <div className="cm-header">Réel : 1</div>
-                      <div className="cm-cell cm-fn"><div className="cm-val">{best.confusion_matrix[1][0]}</div><div className="cm-pct">FN</div></div>
-                      <div className="cm-cell cm-tp"><div className="cm-val">{best.confusion_matrix[1][1]}</div><div className="cm-pct">TP</div></div>
+                      <div className="cm-cell cm-fn"><div className="cm-val">{best.confusion_matrix[1]?.[0] || 0}</div><div className="cm-pct">FN</div></div>
+                      <div className="cm-cell cm-tp"><div className="cm-val">{best.confusion_matrix[1]?.[1] || 0}</div><div className="cm-pct">TP</div></div>
                     </div>
                     <div className="cm-explain">
                       {/* FIX 7: key sur le label de chaque explication */}
@@ -352,29 +356,29 @@ export default function Dashboard({ dataset, config, onReset, onNotif, onRefresh
                   </thead>
                   <tbody>
                     {/* FIX 9: key sur run_id dans le tbody */}
-                    {[...results].sort((a,b) => isClassif ? b.accuracy - a.accuracy : b.r2 - a.r2).map(r => (
-                      <tr key={r.run_id} className={r.algo_id === best.algo_id ? "row-best" : ""}>
+                    {[...results].sort((a,b) => isClassif ? (b?.accuracy || 0) - (a?.accuracy || 0) : (b?.r2 || 0) - (a?.r2 || 0)).map(r => (
+                      <tr key={r.run_id} className={r.algo_id === best?.algo_id ? "row-best" : ""}>
                         <td><strong>{ALGO_ICONS[r.algo_id]} {r.algo_name}</strong></td>
                         {isClassif ? (
                           <>
-                            <td style={r.algo_id===best.algo_id?{color:"var(--green1)",fontWeight:900}:{}}>{(r.accuracy*100).toFixed(1)}%</td>
-                            <td>{r.f1.toFixed(3)}</td>
-                            <td>{r.precision.toFixed(3)}</td>
-                            <td>{r.recall.toFixed(3)}</td>
-                            <td>{r.auc.toFixed(3)}</td>
-                            <td>{r.cv_score.toFixed(3)}</td>
-                            <td style={{color:"var(--muted)"}}>{(r.train_accuracy*100).toFixed(1)}%</td>
-                            <td style={{color:r.overfitting_gap>0.1?"var(--red)":"var(--green1)",fontFamily:"monospace"}}>
-                              {r.overfitting_gap.toFixed(3)}{r.overfitting_gap>0.1?" ⚠️":" ✅"}
+                            <td style={r.algo_id===best?.algo_id?{color:"var(--green1)",fontWeight:900}:{}}>{((r?.accuracy || 0)*100).toFixed(1)}%</td>
+                            <td>{(r?.f1 || 0).toFixed(3)}</td>
+                            <td>{(r?.precision || 0).toFixed(3)}</td>
+                            <td>{(r?.recall || 0).toFixed(3)}</td>
+                            <td>{(r?.auc || 0).toFixed(3)}</td>
+                            <td>{(r?.cv_score || 0).toFixed(3)}</td>
+                            <td style={{color:"var(--muted)"}}>{((r?.train_accuracy || 0)*100).toFixed(1)}%</td>
+                            <td style={{color:(r?.overfitting_gap || 0)>0.1?"var(--red)":"var(--green1)",fontFamily:"monospace"}}>
+                              {(r?.overfitting_gap || 0).toFixed(3)}{(r?.overfitting_gap || 0)>0.1?" ⚠️":" ✅"}
                             </td>
                           </>
                         ) : (
                           <>
-                            <td style={r.algo_id===best.algo_id?{color:"var(--green1)",fontWeight:900}:{}}>{r.r2.toFixed(3)}</td>
-                            <td>{r.rmse.toFixed(3)}</td>
-                            <td>{r.mae.toFixed(3)}</td>
-                            <td style={{color:"var(--muted)"}}>{r.train_rmse.toFixed(3)}</td>
-                            <td>{r.cv_r2.toFixed(3)}</td>
+                            <td style={r.algo_id===best?.algo_id?{color:"var(--green1)",fontWeight:900}:{}}>{(r?.r2 || 0).toFixed(3)}</td>
+                            <td>{(r?.rmse || 0).toFixed(3)}</td>
+                            <td>{(r?.mae || 0).toFixed(3)}</td>
+                            <td style={{color:"var(--muted)"}}>{(r?.train_rmse || 0).toFixed(3)}</td>
+                            <td>{(r?.cv_r2 || 0).toFixed(3)}</td>
                           </>
                         )}
                         <td style={{color:"var(--muted)"}}>{r.time}s</td>
@@ -404,21 +408,21 @@ export default function Dashboard({ dataset, config, onReset, onNotif, onRefresh
                 <div className="mlflow-runs">
                   {/* FIX 10: key sur run_id (identifiant MLflow unique par run) */}
                   {results.map((r, i) => (
-                    <div key={r.run_id} className={`mlflow-run-card ${r.algo_id === best.algo_id ? "mlflow-run-best" : ""}`}>
+                    <div key={r.run_id} className={`mlflow-run-card ${r.algo_id === best?.algo_id ? "mlflow-run-best" : ""}`}>
                       <div className="run-header">
                         <span className="run-algo">{ALGO_ICONS[r.algo_id]} {r.algo_name}</span>
-                        {r.algo_id === best.algo_id && <span className="badge-best">🏆 MEILLEUR</span>}
+                        {r.algo_id === best?.algo_id && <span className="badge-best">🏆 MEILLEUR</span>}
                         <span className="run-time">{r.time}s</span>
                       </div>
                       <div className="run-metrics">
                         {isClassif ? (
                           /* FIX 11: key sur label dans les métriques */
                           [
-                            {label:"Accuracy", val:`${(r.accuracy*100).toFixed(1)}%`},
-                            {label:"F1",       val:r.f1.toFixed(3)},
-                            {label:"AUC",      val:r.auc.toFixed(3)},
-                            {label:"CV",       val:r.cv_score.toFixed(3)},
-                            {label:"Overfit Δ",val:r.overfitting_gap.toFixed(3), color:r.overfitting_gap>0.1?"var(--red)":"var(--green1)"},
+                            {label:"Accuracy", val:`${((r?.accuracy || 0)*100).toFixed(1)}%`},
+                            {label:"F1",       val:(r?.f1 || 0).toFixed(3)},
+                            {label:"AUC",      val:(r?.auc || 0).toFixed(3)},
+                            {label:"CV",       val:(r?.cv_score || 0).toFixed(3)},
+                            {label:"Overfit Δ",val:(r?.overfitting_gap || 0).toFixed(3), color:(r?.overfitting_gap || 0)>0.1?"var(--red)":"var(--green1)"},
                           ].map(({label, val, color}) => (
                             <div key={label} className="run-metric">
                               <span>{label}</span>
@@ -427,10 +431,10 @@ export default function Dashboard({ dataset, config, onReset, onNotif, onRefresh
                           ))
                         ) : (
                           [
-                            {label:"R²",   val:r.r2.toFixed(3)},
-                            {label:"RMSE", val:r.rmse.toFixed(3)},
-                            {label:"MAE",  val:r.mae.toFixed(3)},
-                            {label:"CV R²",val:r.cv_r2.toFixed(3)},
+                            {label:"R²",   val:(r?.r2 || 0).toFixed(3)},
+                            {label:"RMSE", val:(r?.rmse || 0).toFixed(3)},
+                            {label:"MAE",  val:(r?.mae || 0).toFixed(3)},
+                            {label:"CV R²",val:(r?.cv_r2 || 0).toFixed(3)},
                           ].map(({label, val}) => (
                             <div key={label} className="run-metric">
                               <span>{label}</span>
