@@ -4,17 +4,19 @@ import PreprocessStep from "./components/PreprocessStep";
 import ConfigStep     from "./components/ConfigStep";
 import Dashboard      from "./components/Dashboard";
 import MLflowPanel    from "./components/MLflowPanel";
+import HistoryPanel   from "./components/Historypanel";   
 import { checkHealth, getStats } from "./api";
 import "./App.css";
 
 export default function App() {
-  const [step, setStep]             = useState("upload");
-  const [dataset, setDataset]       = useState(null);
-  const [config, setConfig]         = useState(null);
-  const [notif, setNotif]           = useState(null);
-  const [backendOk, setBackendOk]   = useState(null);
-  const [stats, setStats]           = useState(null);
-  const [showMLflow, setShowMLflow] = useState(false);
+  const [step, setStep]               = useState("upload");
+  const [dataset, setDataset]         = useState(null);
+  const [config, setConfig]           = useState(null);
+  const [notif, setNotif]             = useState(null);
+  const [backendOk, setBackendOk]     = useState(null);
+  const [stats, setStats]             = useState(null);
+  const [showMLflow, setShowMLflow]   = useState(false);
+  const [showHistory, setShowHistory] = useState(false);  
 
   useEffect(() => {
     checkHealth().then(h => {
@@ -64,12 +66,29 @@ export default function App() {
         </div>
 
         <div className="header-right">
-          {stats && <div className="header-stats"><span>🔬 {stats.total_runs} runs</span><span>·</span><span>🧪 {stats.total_experiments} exp.</span></div>}
-          <button className="btn-mlflow" onClick={() => setShowMLflow(true)}>📊 MLflow</button>
-          {step !== "upload" && <button className="btn-reset" onClick={handleReset}>↩ Nouveau</button>}
+          {stats && (
+            <div className="header-stats">
+              <span>🔬 {stats.total_runs} runs</span>
+              <span>·</span>
+              <span>🧪 {stats.total_experiments} exp.</span>
+            </div>
+          )}
+
+          {/* ── boutons panneaux ── */}
+          <button className="btn-mlflow"   onClick={() => setShowMLflow(true)}>📊 MLflow</button>
+          <button className="btn-history"  onClick={() => setShowHistory(true)}>📋 Historique</button> {/* ← AJOUT */}
+
+          {step !== "upload" && (
+            <button className="btn-reset" onClick={handleReset}>↩ Nouveau</button>
+          )}
+
           <div className={`status-pill ${backendOk === false ? "status-error" : ""}`}>
             <span className={`dot-live ${backendOk === false ? "dot-error" : ""}`} />
-            {backendOk === null ? "Connexion..." : backendOk ? "FastAPI · MLflow ✅" : "Backend déconnecté ❌"}
+            {backendOk === null
+              ? "Connexion..."
+              : backendOk
+              ? "FastAPI · MLflow ✅"
+              : "Backend déconnecté ❌"}
           </div>
         </div>
       </header>
@@ -84,13 +103,15 @@ export default function App() {
       )}
 
       <main className="app-main">
-        {step === "upload"     && <UploadStep     onUpload={handleUpload}         onNotif={showNotif} backendOk={backendOk} />}
-        {step === "preprocess" && <PreprocessStep dataset={dataset}               onDone={handlePreprocess} onBack={() => setStep("upload")} onNotif={showNotif} />}
-        {step === "config"     && <ConfigStep     dataset={dataset}               onConfig={handleConfig} onBack={() => setStep("preprocess")} onNotif={showNotif} />}
-        {step === "dashboard"  && <Dashboard      dataset={dataset} config={config} onReset={handleReset} onNotif={showNotif} onRefreshStats={refreshStats} />}
+        {step === "upload"     && <UploadStep     onUpload={handleUpload}                           onNotif={showNotif} backendOk={backendOk} />}
+        {step === "preprocess" && <PreprocessStep dataset={dataset}                                 onDone={handlePreprocess} onBack={() => setStep("upload")} onNotif={showNotif} />}
+        {step === "config"     && <ConfigStep     dataset={dataset}                                 onConfig={handleConfig} onBack={() => setStep("preprocess")} onNotif={showNotif} />}
+        {step === "dashboard"  && <Dashboard      dataset={dataset} config={config}                 onReset={handleReset} onNotif={showNotif} onRefreshStats={refreshStats} />}
       </main>
 
-      {showMLflow && <MLflowPanel onClose={() => setShowMLflow(false)} onNotif={showNotif} />}
+      {/* Panneaux latéraux */}
+      {showMLflow  && <MLflowPanel  onClose={() => setShowMLflow(false)}  onNotif={showNotif} />}
+      {showHistory && <HistoryPanel onClose={() => setShowHistory(false)} onNotif={showNotif} />} {/* ← AJOUT */}
 
       {notif && (
         <div className={`notif notif-${notif.type}`}>

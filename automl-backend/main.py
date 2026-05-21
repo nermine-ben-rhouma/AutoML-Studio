@@ -34,7 +34,6 @@ logging.getLogger("mlflow").setLevel(logging.WARNING)
 # MLflow
 import mlflow
 import mlflow.sklearn
-from mlflow.sklearn import SERIALIZATION_FORMAT_SKOPS
 from mlflow.tracking import MlflowClient
 from mlflow.exceptions import MlflowException
 
@@ -59,10 +58,9 @@ client = MlflowClient(tracking_uri=MLFLOW_TRACKING_URI)
 
 
 def _log_sklearn_model(model, algo_id: str, algo_name: str, register: bool = False):
-    """Log model with current MLflow API (name + skops, optional registry)."""
+    """Log model with pickle format (default). skops removed to avoid untrusted-types error."""
     kwargs = {
         "name": f"model_{algo_id}",
-        "serialization_format": SERIALIZATION_FORMAT_SKOPS,
         "await_registration_for": 0,
     }
     if register:
