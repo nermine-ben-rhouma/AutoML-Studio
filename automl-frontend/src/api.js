@@ -9,12 +9,15 @@ const handleResponse = async (res) => {
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     const detail = err.detail;
-    const message = typeof detail === "string"
-      ? detail
-      : Array.isArray(detail)
-        ? detail.map((d) => d.msg || d).join(", ")
-        : res.statusText;
-    throw new Error(message || "Erreur serveur");
+    let message = res.statusText;
+    if (typeof detail === "string") {
+      message = detail;
+    } else if (Array.isArray(detail)) {
+      message = detail.map((d) => d.msg || JSON.stringify(d)).join(" — ");
+    } else if (detail && typeof detail === "object") {
+      message = detail.message || JSON.stringify(detail);
+    }
+    throw new Error(message || `Erreur serveur (${res.status})`);
   }
   return res.json();
 };
@@ -52,6 +55,28 @@ export const getExperimentRuns = async (experimentName) => {
 export const getRegisteredModels = async () => {
   const res = await fetch(`${BASE_URL}/models`);
   return handleResponse(res);
+};
+
+// ── RAPPORT ──────────────────────────────────────────────────
+export const generateReport = async (payload) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120000);
+  try {
+    const res = await fetch(`${BASE_URL}/report`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    return handleResponse(res);
+  } catch (e) {
+    if (e.name === "AbortError") {
+      throw new Error("Délai dépassé (120 s) — réduisez le nombre de features ou réessayez.");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timeout);
+  }
 };
 
 // ── STATS ────────────────────────────────────────────────────

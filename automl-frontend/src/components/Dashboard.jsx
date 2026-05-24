@@ -1,5 +1,7 @@
-import { useState, useEffect, useRef } from "react";
-import { trainModels } from "../api";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { trainModels, generateReport } from "../api";
+import ReportPanel from "./ReportPanel";
+import { buildReportPayload } from "../reportPayload";
 
 const ALGO_NAMES = {rf:"Random Forest",svm:"SVM",lr:"Logistic/Linear Reg.",knn:"KNN",dt:"Decision Tree",nb:"Naive Bayes",ridge:"Ridge",lasso:"Lasso",svr:"SVR"};
 const ALGO_ICONS = {rf:"🌲",svm:"⚡",lr:"📈",knn:"🔵",dt:"🌳",nb:"🎲",ridge:"🔺",lasso:"🎯",svr:"⚡"};
@@ -12,6 +14,10 @@ export default function Dashboard({ dataset, config, onReset, onNotif, onRefresh
   const [progress, setProgress]     = useState(0);
   const [trainInfo, setTrainInfo]   = useState(null);
   const [error, setError]           = useState(null);
+  const [showReport, setShowReport] = useState(false);
+  const [reportData, setReportData] = useState(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError] = useState(null);
   const trainingStarted = useRef(false);
 
   const isClassif = config.taskType === "classification";
@@ -58,6 +64,28 @@ export default function Dashboard({ dataset, config, onReset, onNotif, onRefresh
     ? results.reduce((a,b) => (a?.accuracy || 0) > (b?.accuracy || 0) ? a : b)
     : results.reduce((a,b) => (a?.r2 || 0) > (b?.r2 || 0) ? a : b)
   ) : null;
+
+  const loadReport = useCallback(async () => {
+    setReportLoading(true);
+    setReportError(null);
+    setReportData(null);
+    setShowReport(true);
+    try {
+      const payload = buildReportPayload(dataset, config, trainInfo, results, best);
+      const data = await generateReport(payload);
+      if (!data?.sections?.length) {
+        throw new Error("Le serveur a renvoyé un rapport vide.");
+      }
+      setReportData(data);
+      onNotif("📋 Rapport généré (4 questions)", "success");
+    } catch (e) {
+      const msg = e?.message || "Impossible de générer le rapport.";
+      setReportError(msg);
+      onNotif(`❌ Rapport : ${msg}`, "error");
+    } finally {
+      setReportLoading(false);
+    }
+  }, [dataset, config, trainInfo, results, best, onNotif]);
 
   const exportCSV = () => {
     if (!results) return;
@@ -172,11 +200,35 @@ export default function Dashboard({ dataset, config, onReset, onNotif, onRefresh
                 </>
               )}
             </div>
-            <div style={{display:"flex",gap:8}}>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              <button
+                type="button"
+                className="btn-report"
+                onClick={loadReport}
+                disabled={reportLoading}
+                title="Rapport : importance, stabilité, erreurs, biais/variance"
+              >
+                {reportLoading ? "⏳ Rapport…" : `📋 Rapport — ${best?.algo_name || "meilleur modèle"}`}
+              </button>
               <button className="btn-export-csv" onClick={exportCSV}>📥 Export CSV</button>
               <a className="btn-export-csv" href="http://localhost:5000" target="_blank" rel="noreferrer">🔬 MLflow UI</a>
             </div>
           </div>
+
+          {showReport && (
+            <ReportPanel
+              report={reportData}
+              loading={reportLoading}
+              error={reportError}
+              bestModel={best}
+              onClose={() => {
+                setShowReport(false);
+                setReportData(null);
+                setReportError(null);
+              }}
+              onRetry={loadReport}
+            />
+          )}
 
           {/* TABS */}
           <div className="dash-tabs">

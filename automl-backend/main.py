@@ -3,7 +3,7 @@
 # ============================================================
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import pandas as pd
 import numpy as np
@@ -45,9 +45,12 @@ from mlflow_utils import (
     prune_registered_model_versions,
     reset_mlflow_artifacts,
 )
+from report_generator import generate_model_report
 
 # ── CONFIG MLFLOW ────────────────────────────────────────────
 _BACKEND_DIR = Path(__file__).resolve().parent
+_DATASETS_DIR = _BACKEND_DIR / "datasets"
+_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
 MLFLOW_MAX_RUNS = int(os.getenv("MLFLOW_MAX_RUNS", "20"))
 MLFLOW_MAX_MODEL_VERSIONS = int(os.getenv("MLFLOW_MAX_MODEL_VERSIONS", "3"))
@@ -117,6 +120,46 @@ ALGO_NAMES = {
 # ── STOCKAGE EN MÉMOIRE ──────────────────────────────────────
 datasets_store: Dict[str, pd.DataFrame] = {}
 
+
+def _persist_dataset(dataset_id: str, df: pd.DataFrame) -> None:
+    try:
+        df.to_csv(_DATASETS_DIR / f"{dataset_id}.csv", index=False)
+    except OSError as e:
+        logging.warning("Could not persist dataset %s: %s", dataset_id, e)
+
+
+def _load_dataset(dataset_id: str) -> pd.DataFrame:
+    if dataset_id in datasets_store:
+        return datasets_store[dataset_id].copy()
+    path = _DATASETS_DIR / f"{dataset_id}.csv"
+    if path.exists():
+        df = pd.read_csv(path)
+        datasets_store[dataset_id] = df
+        return df.copy()
+    raise HTTPException(
+        404,
+        "Dataset non trouvé — refaites l'upload ou l'entraînement (session serveur expirée).",
+    )
+
+
+def _slim_train_results(results: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
+    if not results:
+        return None
+    slim = []
+    for r in results:
+        if not r.get("algo_id"):
+            continue
+        entry = {
+            "algo_id": str(r.get("algo_id")),
+            "algo_name": r.get("algo_name"),
+            "accuracy": r.get("accuracy"),
+            "r2": r.get("r2"),
+            "f1": r.get("f1"),
+            "rmse": r.get("rmse"),
+        }
+        slim.append({k: v for k, v in entry.items() if v is not None})
+    return slim or None
+
 # ── SCHEMAS ──────────────────────────────────────────────────
 class TrainRequest(BaseModel):
     dataset_id: str
@@ -139,6 +182,18 @@ class PreprocessRequest(BaseModel):
 class PredictRequest(BaseModel):
     run_id: str
     data: List[Dict[str, Any]]
+
+class ReportRequest(BaseModel):
+    dataset_id: str
+    task_type: str
+    target: str
+    features: List[str] = Field(default_factory=list)
+    test_size: float = 0.2
+    best_algo_id: str
+    best_algo_name: Optional[str] = None
+    train_results: Optional[List[Dict[str, Any]]] = None
+    dataset_name: Optional[str] = None
+    experiment_name: Optional[str] = None
 
 # ── ROUTES ───────────────────────────────────────────────────
 
@@ -212,6 +267,7 @@ async def upload_dataset(file: UploadFile = File(...)):
 
     dataset_id = f"ds_{int(time.time())}"
     datasets_store[dataset_id] = df
+    _persist_dataset(dataset_id, df)
 
     num_cols   = df.select_dtypes(include=np.number).columns.tolist()
     cat_cols   = df.select_dtypes(exclude=np.number).columns.tolist()
@@ -233,10 +289,10 @@ async def upload_dataset(file: UploadFile = File(...)):
 # ── PREPROCESS DATASET ───────────────────────────────────────
 @app.post("/preprocess")
 def preprocess(req: PreprocessRequest):
-    if req.dataset_id not in datasets_store:
+    try:
+        df = _load_dataset(req.dataset_id)
+    except HTTPException:
         raise HTTPException(404, "Dataset non trouvé — veuillez le re-uploader")
-
-    df = datasets_store[req.dataset_id].copy()
     rows_before        = len(df)
     duplicates_removed = 0
     nulls_handled      = 0
@@ -294,6 +350,7 @@ def preprocess(req: PreprocessRequest):
         df[num_cols] = scaler.fit_transform(df[num_cols])
 
     datasets_store[req.dataset_id] = df
+    _persist_dataset(req.dataset_id, df)
 
     return {
         "dataset_id":         req.dataset_id,
@@ -349,10 +406,10 @@ def prepare_target(y: pd.Series, task_type: str):
 # ── TRAIN ────────────────────────────────────────────────────
 @app.post("/train")
 def train(req: TrainRequest):
-    if req.dataset_id not in datasets_store:
+    try:
+        df = _load_dataset(req.dataset_id)
+    except HTTPException:
         raise HTTPException(404, "Dataset non trouvé — veuillez le re-uploader")
-
-    df = datasets_store[req.dataset_id].copy()
 
     if req.target not in df.columns:
         raise HTTPException(400, f"Colonne cible '{req.target}' introuvable")
@@ -366,6 +423,9 @@ def train(req: TrainRequest):
     df = df.dropna(subset=[req.target])
     if len(df) < 10:
         raise HTTPException(400, "Pas assez de données après nettoyage (minimum 10 lignes).")
+
+    datasets_store[req.dataset_id] = df
+    _persist_dataset(req.dataset_id, df)
 
     X = prepare_features(df[features])
     y, target_encoder = prepare_target(df[req.target], req.task_type)
@@ -546,6 +606,51 @@ def train(req: TrainRequest):
         "best_model":      best["algo_id"],
         "mlflow_ui":       "http://localhost:5000",
     }
+
+
+@app.post("/report")
+def generate_report(req: ReportRequest):
+    """Rapport d'analyse adapté au meilleur modèle (questions 1 à 5)."""
+    if not (req.best_algo_id or "").strip():
+        raise HTTPException(400, "best_algo_id requis (meilleur modèle après entraînement).")
+    logging.info(
+        "Report request: dataset=%s target=%s algo=%s n_features=%s",
+        req.dataset_id, req.target, req.best_algo_id, len(req.features or []),
+    )
+    df = _load_dataset(req.dataset_id)
+    if req.target not in df.columns:
+        raise HTTPException(
+            400,
+            f"Colonne cible '{req.target}' introuvable. Colonnes disponibles : {list(df.columns)[:12]}",
+        )
+    features = [f for f in (req.features or []) if f in df.columns and f != req.target]
+    if not features:
+        features = [c for c in df.columns if c != req.target]
+    try:
+        report = generate_model_report(
+            df=df,
+            target=req.target,
+            features=features,
+            task_type=req.task_type,
+            test_size=req.test_size,
+            best_algo_id=req.best_algo_id,
+            best_algo_name=req.best_algo_name,
+            train_results=_slim_train_results(req.train_results),
+            dataset_name=req.dataset_name,
+            experiment_name=req.experiment_name,
+        )
+        if report.get("project"):
+            report["project"]["dataset_id"] = req.dataset_id
+        if not report.get("sections"):
+            raise HTTPException(500, "Rapport vide généré par le serveur.")
+        return report
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        logging.exception("Report generation failed")
+        raise HTTPException(500, f"Échec génération du rapport : {e}") from e
 
 # ── EXPERIMENTS ──────────────────────────────────────────────
 @app.get("/experiments")
