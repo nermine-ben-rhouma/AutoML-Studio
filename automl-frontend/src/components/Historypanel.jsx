@@ -1,10 +1,6 @@
 import { useState, useEffect } from "react";
-import { getExperiments, getExperimentRuns, getRegisteredModels } from "../api";
-
-const ALGO_ICONS = {
-  rf:"🌲", svm:"⚡", lr:"📈", knn:"🔵", dt:"🌳",
-  nb:"🎲", ridge:"🔺", lasso:"🎯", svr:"⚡"
-};
+import { getExperiments, getExperimentRuns, getRegisteredModels, getStats } from "../api";
+import { algoIcon, algoLabel, countByAlgo, ALGO_LABELS } from "../algoMeta";
 
 export default function HistoryPanel({ onClose, onNotif }) {
   const [experiments, setExperiments] = useState([]);
@@ -16,13 +12,19 @@ export default function HistoryPanel({ onClose, onNotif }) {
   const [search, setSearch]           = useState("");
   const [sortBy, setSortBy]           = useState("date");
   const [filterTask, setFilterTask]   = useState("all");
+  const [globalStats, setGlobalStats] = useState(null);
 
   useEffect(() => { loadAll(); }, []);
 
   const loadAll = async () => {
     setLoading(true);
     try {
-      const [exps, mods] = await Promise.all([getExperiments(), getRegisteredModels()]);
+      const [exps, mods, st] = await Promise.all([
+        getExperiments(),
+        getRegisteredModels(),
+        getStats().catch(() => null),
+      ]);
+      setGlobalStats(st);
       setExperiments(exps);
       setModels(mods);
       if (exps.length > 0) {
@@ -47,6 +49,7 @@ export default function HistoryPanel({ onClose, onNotif }) {
   const filteredRuns = runs
     .filter(r => {
       const matchSearch = !search ||
+        algoLabel(r).toLowerCase().includes(search.toLowerCase()) ||
         r.algo?.toLowerCase().includes(search.toLowerCase()) ||
         r.target?.toLowerCase().includes(search.toLowerCase());
       const matchTask = filterTask === "all" || r.task_type === filterTask;
@@ -68,7 +71,7 @@ export default function HistoryPanel({ onClose, onNotif }) {
   const exportHistory = () => {
     const header = "Run ID,Algorithme,Task,Target,Accuracy,F1,R2,RMSE,CV,Date";
     const rows = filteredRuns.map(r =>
-      `${r.run_id},${r.algo},${r.task_type},${r.target},` +
+      `${r.run_id},${algoLabel(r)},${r.task_type},${r.target},` +
       `${r.metrics?.accuracy||""},${r.metrics?.f1_score||""},` +
       `${r.metrics?.r2||""},${r.metrics?.rmse||""},` +
       `${r.metrics?.cv_score||r.metrics?.cv_r2||""},${r.start_time}`
@@ -158,7 +161,7 @@ export default function HistoryPanel({ onClose, onNotif }) {
                       <span>🏆</span>
                       <div>
                         <div style={{fontWeight:900,fontSize:"0.85rem"}}>
-                          Meilleur run : {ALGO_ICONS[bestRun.algo]} {bestRun.algo?.toUpperCase()}
+                          Meilleur run : {algoIcon(bestRun.algo)} {algoLabel(bestRun)}
                         </div>
                         <div style={{fontSize:"0.68rem",color:"var(--muted)"}}>
                           Target : {bestRun.target} ·
@@ -180,9 +183,9 @@ export default function HistoryPanel({ onClose, onNotif }) {
                           className={`run-item ${r.run_id===bestRun?.run_id?"run-item-best":""}`}>
                           <div className="run-item-header">
                             <div className="run-item-left">
-                              <span className="run-item-icon">{ALGO_ICONS[r.algo] || "🤖"}</span>
+                              <span className="run-item-icon">{algoIcon(r.algo)}</span>
                               <div>
-                                <div className="run-item-algo">{r.algo || "Unknown"}</div>
+                                <div className="run-item-algo">{algoLabel(r)}</div>
                                 <div className="run-item-meta">
                                   <span className={`run-task-badge ${r.task_type==="classification"?"badge-class":"badge-reg"}`}>
                                     {r.task_type==="classification"?"🏷 Classif.":"📈 Régress."}
@@ -271,8 +274,9 @@ export default function HistoryPanel({ onClose, onNotif }) {
                 <div className="fade-in" style={{display:"flex",flexDirection:"column",gap:14}}>
                   <div className="stats-overview">
                     {[
-                      {icon:"🧪",label:"Expériences",val:experiments.length,color:"green"},
-                      {icon:"▶",label:"Runs totaux",val:runs.length,color:"blue"},
+                      {icon:"🧪",label:"Expériences",val:globalStats?.total_experiments ?? experiments.length,color:"green"},
+                      {icon:"▶",label:"Runs (exp. courante)",val:runs.length,color:"blue"},
+                      {icon:"🔬",label:"Runs (tous)",val:globalStats?.total_runs ?? "—",color:"blue"},
                       {icon:"📦",label:"Modèles registry",val:models.length,color:"purple"},
                       {icon:"✅",label:"Runs réussis",val:runs.filter(r=>r.status==="FINISHED").length,color:"green"},
                     ].map(s => (
@@ -284,18 +288,31 @@ export default function HistoryPanel({ onClose, onNotif }) {
                     ))}
                   </div>
 
+                  {(globalStats?.best_accuracy != null || globalStats?.best_r2 != null) && (
+                    <div className="history-best-banner">
+                      <span>📈</span>
+                      <div style={{fontSize:"0.85rem"}}>
+                        {globalStats.best_accuracy != null && (
+                          <span>Meilleure accuracy globale : <strong>{(globalStats.best_accuracy * 100).toFixed(1)}%</strong></span>
+                        )}
+                        {globalStats.best_accuracy != null && globalStats.best_r2 != null && " · "}
+                        {globalStats.best_r2 != null && globalStats.best_r2 > -999 && (
+                          <span>Meilleur R² global : <strong>{globalStats.best_r2.toFixed(3)}</strong></span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Répartition par algo */}
                   <div className="chart-card">
-                    <div className="chart-title">🤖 Runs par algorithme</div>
+                    <div className="chart-title">🤖 Runs par algorithme ({selectedExp})</div>
                     <div className="bar-chart">
-                      {Object.entries(
-                        runs.reduce((acc, r) => {
-                          acc[r.algo || "unknown"] = (acc[r.algo || "unknown"] || 0) + 1;
-                          return acc;
-                        }, {})
-                      ).sort((a,b) => b[1]-a[1]).map(([algo, count], i) => (
+                      {runs.length === 0 ? (
+                        <div className="panel-empty">Aucun run dans cette expérience</div>
+                      ) : Object.entries(countByAlgo(runs))
+                      .sort((a,b) => b[1]-a[1]).map(([algo, count], i) => (
                         <div className="bar-row" key={algo}>
-                          <div className="bar-label">{ALGO_ICONS[algo]||"🤖"} {algo}</div>
+                          <div className="bar-label">{algoIcon(algo)} {ALGO_LABELS[algo] || algo}</div>
                           <div className="bar-track">
                             <div className="bar-fill" style={{
                               width:`${(count/runs.length)*100}%`,

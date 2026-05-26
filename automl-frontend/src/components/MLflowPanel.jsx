@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { getExperiments, getExperimentRuns, getRegisteredModels } from "../api";
+import { algoLabel } from "../algoMeta";
 
 export default function MLflowPanel({ onClose, onNotif }) {
   const [experiments, setExperiments]   = useState([]);
@@ -119,7 +120,7 @@ export default function MLflowPanel({ onClose, onNotif }) {
                         <tbody>
                           {runs.map(r=>(
                             <tr key={r.run_id}>
-                              <td><strong>{r.algo||r.run_name}</strong></td>
+                              <td><strong>{algoLabel(r) || r.run_name}</strong></td>
                               <td><span className={`example-badge ${r.task_type==="classification"?"badge-class":"badge-reg"}`}>
                                 {r.task_type==="classification"?"🏷 Classif.":"📈 Régress."}
                               </span></td>

@@ -1,9 +1,18 @@
 # Python / MLflow
 automl-backend/venv/
 automl-backend/__pycache__/
+automl-backend/**/__pycache__/
 automl-backend/mlruns/
 automl-backend/mlflow.db
 automl-backend/mlflow.db-*
+automl-backend/mlflow_fresh.db
+automl-backend/mlflow_fresh.db-*
+
+# Datasets uploadés (données utilisateur)
+automl-backend/datasets/*.csv
+
+# Utilisateurs (mots de passe hashés)
+automl-backend/data/users.json
 
 # Node
 automl-frontend/node_modules/
@@ -13,4 +22,9 @@ automl-frontend/build/
 .DS_Store
 Thumbs.db
 .env
+.env.local
 *.pyc
+.cursor/
+
+# Assets locaux temporaires
+assets/

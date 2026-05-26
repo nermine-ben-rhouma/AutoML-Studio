@@ -1,10 +1,10 @@
 # ============================================================
 # AutoML Studio — Back-End FastAPI + MLflow
 # ============================================================
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import Depends, FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from typing import Annotated, List, Optional, Dict, Any
 import pandas as pd
 import numpy as np
 import io, time, json, os, re
@@ -38,6 +38,7 @@ from mlflow.tracking import MlflowClient
 from mlflow.exceptions import MlflowException
 
 from mlflow_utils import (
+    bootstrap_mlflow_client,
     cleanup_mlflow_store,
     disk_free_bytes,
     ensure_disk_space,
@@ -46,6 +47,16 @@ from mlflow_utils import (
     reset_mlflow_artifacts,
 )
 from report_generator import generate_model_report
+from auth import (
+    auth_router,
+    get_current_user,
+    init_default_admin,
+    AUTH_DISABLED,
+    JWT_SECRET,
+    JWT_DEFAULT_SECRET,
+)
+
+CurrentUser = Annotated[dict, Depends(get_current_user)]
 
 # ── CONFIG MLFLOW ────────────────────────────────────────────
 _BACKEND_DIR = Path(__file__).resolve().parent
@@ -55,21 +66,40 @@ MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
 MLFLOW_MAX_RUNS = int(os.getenv("MLFLOW_MAX_RUNS", "20"))
 MLFLOW_MAX_MODEL_VERSIONS = int(os.getenv("MLFLOW_MAX_MODEL_VERSIONS", "3"))
 MLFLOW_REGISTER_MODELS = os.getenv("MLFLOW_REGISTER_MODELS", "false").lower() in ("1", "true", "yes")
+# SVM/SVR sur grands jeux : sous-échantillonnage pour éviter blocages (15k+ lignes)
+MAX_ROWS_FOR_SVM = int(os.getenv("MAX_ROWS_FOR_SVM", "5000"))
 
-mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-client = MlflowClient(tracking_uri=MLFLOW_TRACKING_URI)
+# Client MLflow (répare automatiquement une mlflow.db corrompue)
+client, MLFLOW_TRACKING_URI = bootstrap_mlflow_client(MLFLOW_TRACKING_URI)
+
+# ── CORS (front React : 3000 par défaut, 3001 si port occupé, etc.) ──
+_DEFAULT_CORS_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
+]
+_cors_env = os.getenv("CORS_ORIGINS", "").strip()
+CORS_ORIGINS = (
+    [o.strip() for o in _cors_env.split(",") if o.strip()]
+    if _cors_env
+    else _DEFAULT_CORS_ORIGINS
+)
+# Tout port local si besoin (ex. npm start sur 3002)
+CORS_ALLOW_ORIGIN_REGEX = os.getenv(
+    "CORS_ALLOW_ORIGIN_REGEX",
+    r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+)
 
 
 def _log_sklearn_model(model, algo_id: str, algo_name: str, register: bool = False):
-    """Log model with pickle format (default). skops removed to avoid untrusted-types error."""
-    kwargs = {
-        "name": f"model_{algo_id}",
-        "await_registration_for": 0,
-    }
+    """Log model (MLflow 2.13 : artifact_path, pas name)."""
+    artifact_path = f"model_{algo_id}"
+    kwargs: Dict[str, Any] = {"await_registration_for": 0}
     if register:
         safe = re.sub(r"[^a-zA-Z0-9_\-\. ]", "_", algo_name).replace(" ", "_")
         kwargs["registered_model_name"] = f"AutoML_{safe}"
-    mlflow.sklearn.log_model(model, **kwargs)
+    mlflow.sklearn.log_model(model, artifact_path=artifact_path, **kwargs)
 
 # ── FASTAPI APP ──────────────────────────────────────────────
 app = FastAPI(
@@ -80,11 +110,28 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=CORS_ORIGINS,
+    allow_origin_regex=CORS_ALLOW_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(auth_router)
+
+
+@app.on_event("startup")
+def _startup_auth():
+    init_default_admin()
+    if AUTH_DISABLED:
+        logging.warning("AUTH_DISABLED=true — routes ML sans JWT")
+    elif JWT_SECRET == JWT_DEFAULT_SECRET:
+        logging.warning("JWT_SECRET par défaut — définissez une clé secrète en production")
+    try:
+        mlflow.search_experiments(max_results=1)
+        logging.info("MLflow connecté — %s", MLFLOW_TRACKING_URI)
+    except Exception as exc:
+        logging.error("MLflow non disponible après démarrage: %s", exc)
 
 # ── MODÈLES DISPONIBLES ───────────────────────────────────────
 CLASSIFIERS = {
@@ -108,7 +155,7 @@ REGRESSORS = {
 ALGO_NAMES = {
     "rf":    "Random Forest",
     "svm":   "SVM",
-    "lr":    "Logistic_Linear_Regression",
+    "lr":    "Logistic/Linear Reg.",
     "knn":   "KNN",
     "dt":    "Decision Tree",
     "nb":    "Naive Bayes",
@@ -116,6 +163,58 @@ ALGO_NAMES = {
     "lasso": "Lasso Regression",
     "svr":   "SVR",
 }
+
+_ALGO_NAME_TO_ID = {v.lower(): k for k, v in ALGO_NAMES.items()}
+
+
+def _row_val(row, key: str, default: str = "") -> str:
+    if key not in row.index:
+        return default
+    v = row[key]
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return default
+    return str(v)
+
+
+def _resolve_algo_id(row) -> str:
+    """ID court (rf, svm…) pour l'UI — depuis params.algorithm ou tags."""
+    aid = _row_val(row, "params.algorithm")
+    if aid:
+        return aid
+    name = _row_val(row, "tags.algorithm_name")
+    if name:
+        found = _ALGO_NAME_TO_ID.get(name.lower())
+        if found:
+            return found
+    run_name = _row_val(row, "tags.mlflow.runName")
+    if run_name:
+        for algo_id, label in ALGO_NAMES.items():
+            if run_name.startswith(label):
+                return algo_id
+    return "unknown"
+
+
+def _format_mlflow_run_row(row) -> Dict[str, Any]:
+    algo_id = _resolve_algo_id(row)
+    algo_name = _row_val(row, "tags.algorithm_name") or ALGO_NAMES.get(algo_id, algo_id)
+    task_type = _row_val(row, "tags.task_type") or _row_val(row, "params.task_type")
+    target = _row_val(row, "tags.target_column") or _row_val(row, "params.target")
+    metrics = {
+        k.replace("metrics.", ""): round(v, 4)
+        for k, v in row.items()
+        if k.startswith("metrics.") and not pd.isna(v)
+    }
+    return {
+        "run_id":     row["run_id"],
+        "run_name":   _row_val(row, "tags.mlflow.runName"),
+        "algo":       algo_id,
+        "algo_name":  algo_name,
+        "task_type":  task_type,
+        "target":     target,
+        "status":     row["status"],
+        "start_time": str(row["start_time"]),
+        "metrics":    metrics,
+    }
 
 # ── STOCKAGE EN MÉMOIRE ──────────────────────────────────────
 datasets_store: Dict[str, pd.DataFrame] = {}
@@ -203,6 +302,7 @@ def root():
 
 @app.get("/health")
 def health():
+    # Public — pas de JWT
     return {
         "status": "ok",
         "mlflow": "connected",
@@ -212,7 +312,11 @@ def health():
 
 
 @app.post("/maintenance/cleanup")
-def maintenance_cleanup(keep_runs: int = MLFLOW_MAX_RUNS, keep_versions: int = MLFLOW_MAX_MODEL_VERSIONS):
+def maintenance_cleanup(
+    user: CurrentUser,
+    keep_runs: int = MLFLOW_MAX_RUNS,
+    keep_versions: int = MLFLOW_MAX_MODEL_VERSIONS,
+):
     """Supprime les anciens runs MLflow et versions du registry pour libérer de l'espace."""
     try:
         return cleanup_mlflow_store(client, keep_runs, keep_versions)
@@ -221,7 +325,7 @@ def maintenance_cleanup(keep_runs: int = MLFLOW_MAX_RUNS, keep_versions: int = M
 
 
 @app.post("/maintenance/reset")
-def maintenance_reset():
+def maintenance_reset(user: CurrentUser):
     """Réinitialise mlruns/ et mlflow.db (toutes les expériences seront perdues)."""
     try:
         return reset_mlflow_artifacts()
@@ -256,7 +360,7 @@ def read_dataframe(content: bytes, filename: str) -> pd.DataFrame:
 
 # ── UPLOAD DATASET ───────────────────────────────────────────
 @app.post("/upload")
-async def upload_dataset(file: UploadFile = File(...)):
+async def upload_dataset(user: CurrentUser, file: UploadFile = File(...)):
     content = await file.read()
     try:
         df = read_dataframe(content, file.filename)
@@ -288,7 +392,7 @@ async def upload_dataset(file: UploadFile = File(...)):
 
 # ── PREPROCESS DATASET ───────────────────────────────────────
 @app.post("/preprocess")
-def preprocess(req: PreprocessRequest):
+def preprocess(req: PreprocessRequest, user: CurrentUser):
     try:
         df = _load_dataset(req.dataset_id)
     except HTTPException:
@@ -403,9 +507,39 @@ def prepare_target(y: pd.Series, task_type: str):
         y = y.fillna(y.median())
     return y, target_encoder
 
+
+def _subsample_xy(X: np.ndarray, y, max_rows: int):
+    if len(X) <= max_rows:
+        return X, y
+    idx = np.random.RandomState(42).choice(len(X), max_rows, replace=False)
+    y_sub = y.iloc[idx] if hasattr(y, "iloc") else y[idx]
+    return X[idx], y_sub
+
+
+def _safe_cv_score(model, X, y, cv_folds: int, scoring: str) -> float:
+    """Évite un CV très lent sur SVM/SVR avec beaucoup de lignes."""
+    name = type(model).__name__
+    if len(X) > 3000 and name in ("SVC", "SVR"):
+        return 0.0
+    try:
+        return float(cross_val_score(model, X, y, cv=cv_folds, scoring=scoring).mean())
+    except Exception:
+        return 0.0
+
+
 # ── TRAIN ────────────────────────────────────────────────────
 @app.post("/train")
-def train(req: TrainRequest):
+def train(req: TrainRequest, user: CurrentUser):
+    try:
+        return _train_impl(req)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.exception("Erreur /train")
+        raise HTTPException(500, f"Erreur d'entraînement : {exc}") from exc
+
+
+def _train_impl(req: TrainRequest):
     try:
         df = _load_dataset(req.dataset_id)
     except HTTPException:
@@ -486,7 +620,12 @@ def train(req: TrainRequest):
             mlflow.log_param("test_size",  req.test_size)
             mlflow.log_param("features",   json.dumps(features))
 
-            model.fit(X_train_sc, y_train)
+            X_fit, y_fit = X_train_sc, y_train
+            if algo_id in ("svm", "svr") and len(X_train_sc) > MAX_ROWS_FOR_SVM:
+                X_fit, y_fit = _subsample_xy(X_train_sc, y_train, MAX_ROWS_FOR_SVM)
+                mlflow.log_param("train_subsample", len(X_fit))
+
+            model.fit(X_fit, y_fit)
             elapsed = round(time.time() - t0, 3)
 
             y_pred       = model.predict(X_test_sc)
@@ -507,10 +646,7 @@ def train(req: TrainRequest):
                         auc = roc_auc_score(y_test, model.predict_proba(X_test_sc)[:, 1])
                 except Exception:
                     pass
-                try:
-                    cv = cross_val_score(model, X_train_sc, y_train, cv=cv_folds, scoring="accuracy").mean()
-                except Exception:
-                    cv = 0.0
+                cv = _safe_cv_score(model, X_fit, y_fit, cv_folds, "accuracy")
                 cm = confusion_matrix(y_test, y_pred).tolist()
 
                 mlflow.log_metric("accuracy",        acc)
@@ -539,10 +675,7 @@ def train(req: TrainRequest):
                 r2        = r2_score(y_test, y_pred)
                 train_mse = mean_squared_error(y_train, y_pred_train)
                 train_r2  = r2_score(y_train, y_pred_train)
-                try:
-                    cv = cross_val_score(model, X_train_sc, y_train, cv=cv_folds, scoring="r2").mean()
-                except Exception:
-                    cv = 0.0
+                cv = _safe_cv_score(model, X_fit, y_fit, cv_folds, "r2")
 
                 mlflow.log_metric("rmse",          rmse)
                 mlflow.log_metric("mae",           mae)
@@ -609,7 +742,7 @@ def train(req: TrainRequest):
 
 
 @app.post("/report")
-def generate_report(req: ReportRequest):
+def generate_report(req: ReportRequest, user: CurrentUser):
     """Rapport d'analyse adapté au meilleur modèle (questions 1 à 5)."""
     if not (req.best_algo_id or "").strip():
         raise HTTPException(400, "best_algo_id requis (meilleur modèle après entraînement).")
@@ -654,7 +787,7 @@ def generate_report(req: ReportRequest):
 
 # ── EXPERIMENTS ──────────────────────────────────────────────
 @app.get("/experiments")
-def get_experiments():
+def get_experiments(user: CurrentUser):
     try:
         exps = mlflow.search_experiments()
         return [{"id": e.experiment_id, "name": e.name,
@@ -663,33 +796,19 @@ def get_experiments():
         return []
 
 @app.get("/experiments/{experiment_name}/runs")
-def get_runs(experiment_name: str):
+def get_runs(experiment_name: str, user: CurrentUser):
     try:
         exp = mlflow.get_experiment_by_name(experiment_name)
         if not exp:
             return []
         runs = mlflow.search_runs(experiment_ids=[exp.experiment_id], order_by=["start_time DESC"])
-        result = []
-        for _, row in runs.iterrows():
-            result.append({
-                "run_id":     row["run_id"],
-                "run_name":   row.get("tags.mlflow.runName", ""),
-                "algo":       row.get("tags.algorithm_name", ""),
-                "task_type":  row.get("tags.task_type", ""),
-                "target":     row.get("tags.target_column", ""),
-                "status":     row["status"],
-                "start_time": str(row["start_time"]),
-                "metrics":    {k.replace("metrics.", ""): round(v, 4)
-                               for k, v in row.items()
-                               if k.startswith("metrics.") and not pd.isna(v)},
-            })
-        return result
+        return [_format_mlflow_run_row(row) for _, row in runs.iterrows()]
     except Exception as e:
         raise HTTPException(500, str(e))
 
 # ── MODELS REGISTRY ──────────────────────────────────────────
 @app.get("/models")
-def get_registered_models():
+def get_registered_models(user: CurrentUser):
     try:
         models = client.search_registered_models()
         result = []
@@ -706,7 +825,7 @@ def get_registered_models():
 
 # ── PREDICT ──────────────────────────────────────────────────
 @app.post("/predict")
-def predict(req: PredictRequest):
+def predict(req: PredictRequest, user: CurrentUser):
     try:
         run = client.get_run(req.run_id)
         algo_tag = run.data.tags.get("algorithm_name", "")
@@ -732,15 +851,50 @@ def predict(req: PredictRequest):
 
 # ── STATS GLOBALES ───────────────────────────────────────────
 @app.get("/stats")
-def get_stats():
+def get_stats(user: CurrentUser):
     try:
-        exps       = mlflow.search_experiments()
-        total_runs = sum(len(mlflow.search_runs(experiment_ids=[e.experiment_id])) for e in exps)
+        exps = mlflow.search_experiments()
+        all_runs = []
+        for e in exps:
+            df = mlflow.search_runs(experiment_ids=[e.experiment_id], max_results=10_000)
+            for _, row in df.iterrows():
+                all_runs.append(_format_mlflow_run_row(row))
+
+        by_algo: Dict[str, int] = {}
+        finished = 0
+        best_accuracy = 0.0
+        best_r2 = -999.0
+        for r in all_runs:
+            aid = r.get("algo") or "unknown"
+            by_algo[aid] = by_algo.get(aid, 0) + 1
+            if r.get("status") == "FINISHED":
+                finished += 1
+            m = r.get("metrics") or {}
+            if m.get("accuracy") is not None:
+                best_accuracy = max(best_accuracy, float(m["accuracy"]))
+            if m.get("r2") is not None:
+                best_r2 = max(best_r2, float(m["r2"]))
+
         return {
             "total_experiments": len(exps),
-            "total_runs":        total_runs,
+            "total_runs":        len(all_runs),
+            "runs_finished":     finished,
             "total_datasets":    len(datasets_store),
+            "runs_by_algo":      by_algo,
+            "best_accuracy":     round(best_accuracy, 4) if best_accuracy else None,
+            "best_r2":           round(best_r2, 4) if best_r2 > -999 else None,
+            "mlflow_uri":        MLFLOW_TRACKING_URI,
             "mlflow_ui":         "http://localhost:5000",
         }
     except Exception:
-        return {"total_experiments": 0, "total_runs": 0, "total_datasets": len(datasets_store)}
+        return {
+            "total_experiments": 0,
+            "total_runs": 0,
+            "runs_finished": 0,
+            "total_datasets": len(datasets_store),
+            "runs_by_algo": {},
+            "best_accuracy": None,
+            "best_r2": None,
+            "mlflow_uri": MLFLOW_TRACKING_URI,
+            "mlflow_ui": "http://localhost:5000",
+        }

@@ -1,412 +1,559 @@
-# ⚗️ AutoML Studio
+# AutoML Studio
 
-> **Application professionnelle de Machine Learning** avec upload de dataset, entraînement automatique, comparaison de modèles et tracking MLflow.
+Application web pour l’**apprentissage automatique** : import CSV, préparation des données, entraînement multi-modèles, suivi **MLflow**, historique des expériences et **rapport d’analyse** pédagogique (4 questions, graphiques matplotlib).
 
-![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python)
-![React](https://img.shields.io/badge/React-18-61dafb?logo=react)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?logo=fastapi)
-![MLflow](https://img.shields.io/badge/MLflow-2.10-0194E2?logo=mlflow)
+![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?logo=fastapi&logoColor=white)
+![MLflow](https://img.shields.io/badge/MLflow-2.13-0194E2?logo=mlflow&logoColor=white)
+![scikit-learn](https://img.shields.io/badge/scikit--learn-1.4-F7931E?logo=scikit-learn&logoColor=white)
 
 ---
 
-## 📋 Table des matières
+## Démarrage rapide
+
+```powershell
+# 1. Backend
+cd automl-backend
+python -m venv venv
+.\venv\Scripts\activate
+pip install -r requirements.txt
+python run_dev.py
+
+# 2. Frontend (autre terminal)
+cd automl-frontend
+npm install
+npm start
+
+# 3. MLflow UI (optionnel, 3e terminal — même URI que le backend)
+cd automl-backend
+.\venv\Scripts\activate
+mlflow ui --backend-store-uri sqlite:///mlflow.db --host 127.0.0.1 --port 5000
+```
+
+| Service | URL |
+|---------|-----|
+| Interface | http://localhost:3000 (ou **3001** si 3000 occupé) |
+| API + Swagger | http://localhost:8000 · http://localhost:8000/docs |
+| MLflow UI | http://localhost:5000 |
+
+**Connexion par défaut** (créée au 1er démarrage si aucun utilisateur) : `admin@automl.local` / `admin123`
+
+> Utilisez **`python run_dev.py`** et non `uvicorn --reload` seul : sinon chaque écriture MLflow dans `mlruns/` redémarre le serveur pendant l’entraînement.
+
+---
+
+## Table des matières
 
 - [Aperçu](#aperçu)
+- [Fonctionnalités](#fonctionnalités)
 - [Architecture](#architecture)
 - [Prérequis](#prérequis)
 - [Installation](#installation)
 - [Lancement](#lancement)
-- [Fonctionnalités](#fonctionnalités)
+- [Authentification JWT](#authentification-jwt)
+- [Parcours utilisateur](#parcours-utilisateur)
+- [Rapport d’analyse](#rapport-danalyse-4-questions)
+- [Historique et statistiques](#historique-et-statistiques)
 - [Structure du projet](#structure-du-projet)
-- [API Endpoints](#api-endpoints)
-- [Algorithmes disponibles](#algorithmes-disponibles)
-- [Utilisation](#utilisation)
+- [API REST](#api-rest)
+- [Algorithmes](#algorithmes)
+- [Variables d’environnement](#variables-denvironnement)
 - [Dépannage](#dépannage)
+- [Publication Git](#publication-git)
+- [Licence](#licence)
 
 ---
 
-## 🎯 Aperçu
+## Aperçu
 
-AutoML Studio est une application web complète qui permet à n'importe quel utilisateur de :
+**AutoML Studio** enchaîne :
 
-1. **Uploader** n'importe quel dataset CSV
-2. **Configurer** le type de tâche (Classification ou Régression)
-3. **Entraîner** plusieurs algorithmes ML en parallèle
-4. **Comparer** les résultats avec des graphiques interactifs
-5. **Tracker** toutes les expériences avec MLflow
+1. **Upload** d’un CSV (classification ou régression)
+2. **Nettoyage** (doublons, NA, outliers, normalisation)
+3. **Configuration** (cible, features, algorithmes, split, expérience MLflow)
+4. **Entraînement** multi-modèles avec métriques et tracking
+5. **Comparaison** des résultats + export CSV
+6. **Rapport** visuel pour le meilleur modèle (4 questions pédagogiques)
 
----
-
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────────┐
-│                    UTILISATEUR                       │
-│                  localhost:3000                      │
-└──────────────────────┬──────────────────────────────┘
-                       │ HTTP REST
-┌──────────────────────▼──────────────────────────────┐
-│               REACT FRONT-END                        │
-│  UploadStep → ConfigStep → Dashboard → MLflowPanel  │
-└──────────────────────┬──────────────────────────────┘
-                       │ fetch() API calls
-┌──────────────────────▼──────────────────────────────┐
-│              FASTAPI BACK-END                        │
-│              localhost:8000                          │
-│   /upload  /train  /experiments  /models  /stats    │
-└──────────────────────┬──────────────────────────────┘
-                       │ Python SDK
-┌──────────────────────▼──────────────────────────────┐
-│                  MLFLOW                              │
-│              localhost:5000                          │
-│     SQLite DB │ Experiments │ Runs │ Model Registry │
-└─────────────────────────────────────────────────────┘
-```
+Stack : **React 19** · **FastAPI** · **scikit-learn** · **MLflow 2.13** · **JWT (bcrypt)**.
 
 ---
 
-## ⚙️ Prérequis
+## Fonctionnalités
 
-| Outil | Version minimale | Vérification |
-|-------|-----------------|--------------|
-| Python | 3.11 | `py --list` |
-| Node.js | 16+ | `node --version` |
-| npm | 8+ | `npm --version` |
+### Interface React
 
-> ⚠️ **Important** : Utiliser **Python 3.11** uniquement. Python 3.14 est incompatible avec certaines dépendances ML.
+| Étape | Description |
+|--------|-------------|
+| **Login** | Inscription / connexion JWT, mode dev sans auth possible |
+| **Upload** | CSV, aperçu, stats colonnes, types détectés |
+| **Nettoyage** | Doublons, imputation, outliers (IQR / Z-score), scaling, suppression colonnes |
+| **Configuration** | Cible, tâche, features, `test_size`, algorithmes, nom d’expérience |
+| **Résultats** | Meilleur modèle, métriques, comparaison, export |
+| **Rapport** | Modal 4 questions (importance, stabilité, erreurs, biais/variance) |
+| **Panneaux** | MLflow intégré, **historique** des runs + onglet **statistiques** |
+
+### Back-end FastAPI
+
+- Datasets persistés en `automl-backend/datasets/` (survit au redémarrage)
+- **MLflow** : paramètres, métriques, artefacts modèle (`artifact_path=model_{algo}`)
+- Réparation auto d’une `mlflow.db` corrompue au démarrage (`bootstrap_mlflow_client`)
+- Sous-échantillonnage SVM/SVR au-delà de 5 000 lignes (`MAX_ROWS_FOR_SVM`)
+- Maintenance : purge runs / reset store MLflow
+- **CORS** : ports 3000/3001 + regex localhost pour le dev
+
+### Sécurité
+
+- JWT HS256, mots de passe **bcrypt**
+- Routes ML protégées ; `/health`, `/auth/*` publics
+- Compte admin auto si `data/users.json` vide
+- `AUTH_DISABLED=true` pour développement sans login
 
 ---
 
-## 🚀 Installation
-
-### 1. Cloner / Extraire le projet
+## Architecture
 
 ```
-automl-studio-complet/
-├── automl-backend/
-└── automl-frontend/
+┌─────────────────────────────────────────────────────────────┐
+│  Navigateur — localhost:3000 ou :3001                       │
+│  React : Login → Upload → Preprocess → Config → Dashboard   │
+└────────────────────────────┬────────────────────────────────┘
+                             │ REST + Bearer JWT
+┌────────────────────────────▼────────────────────────────────┐
+│  FastAPI — localhost:8000                                   │
+│  main.py · auth.py · report_* · mlflow_utils.py · run_dev.py│
+└────────────────────────────┬────────────────────────────────┘
+                             │ MLflow Tracking API
+┌────────────────────────────▼────────────────────────────────┐
+│  MLflow UI — localhost:5000                                 │
+│  sqlite:///mlflow.db (ou mlflow_fresh.db) · mlruns/         │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### 2. Installer le Back-End Python
+---
+
+## Prérequis
+
+| Outil | Version | Vérification |
+|--------|---------|--------------|
+| **Python** | **3.11.x** recommandé | `python --version` |
+| **Node.js** | 18 LTS ou 20+ | `node --version` |
+| **npm** | 9+ | `npm --version` |
+
+> Éviter Python 3.12+ si des incompatibilités apparaissent avec numpy / scikit-learn / MLflow.
+
+---
+
+## Installation
+
+### 1. Cloner
+
+```bash
+git clone <URL_DU_REPO>
+cd automl-studio-complet
+```
+
+### 2. Configuration (optionnel)
 
 ```powershell
-# Aller dans le dossier backend
-cd automl-backend
-
-# Créer un environnement virtuel Python 3.11
-py -3.11 -m venv venv
-
-# Activer l'environnement
-venv\Scripts\activate          # Windows
-# source venv/bin/activate     # Linux/Mac
-
-# Mettre à jour pip
-python.exe -m pip install --upgrade pip setuptools wheel
-
-# Installer les dépendances
-pip install fastapi uvicorn pydantic pandas numpy scikit-learn mlflow joblib python-multipart
+copy .env.example automl-backend\.env
+# Éditer JWT_SECRET, INIT_ADMIN_*, MLFLOW_*, etc.
 ```
 
-### 3. Installer le Front-End React
-
-```powershell
-# Aller dans le dossier racine
-cd ..
-
-# Créer le projet React
-npx create-react-app automl-frontend
-
-# Copier les fichiers sources
-xcopy /E /Y "ml-generic\src\*" "automl-frontend\src\"
-
-# Supprimer les fichiers par défaut de React
-cd automl-frontend\src
-del App.js App.test.js logo.svg reportWebVitals.js setupTests.js
-
-# Corriger index.js (voir section Utilisation)
-```
-
----
-
-## ▶️ Lancement
-
-Ouvrir **3 terminaux** dans VS Code :
-
-### Terminal 1 — FastAPI (Back-End)
+### 3. Back-end
 
 ```powershell
 cd automl-backend
-venv\Scripts\activate
-uvicorn main:app --reload
+python -m venv venv
+.\venv\Scripts\activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-✅ Résultat attendu :
+**Dépendances clés** : `fastapi`, `uvicorn`, `pandas`, `scikit-learn`, `mlflow==2.13.0`, `matplotlib`, `setuptools<81` (pour `pkg_resources`), `python-jose`, `passlib`, `bcrypt`.
+
+### 4. Front-end
+
+```powershell
+cd ..\automl-frontend
+npm install
 ```
-INFO: Uvicorn running on http://127.0.0.1:8000
-INFO: Started reloader process
+
+Variable optionnelle : `REACT_APP_API_URL=http://localhost:8000` (fichier `.env` dans `automl-frontend/`).
+
+---
+
+## Lancement
+
+### Terminal 1 — API (recommandé)
+
+```powershell
+cd automl-backend
+.\venv\Scripts\activate
+python run_dev.py
 ```
+
+`run_dev.py` lance uvicorn avec `--reload` en **excluant** `mlruns/`, `datasets/`, `*.db` du file-watcher.
 
 ### Terminal 2 — MLflow UI
 
+Utiliser la **même URI** que celle loguée au démarrage du backend (souvent `sqlite:///mlflow.db`, parfois `sqlite:///mlflow_fresh.db` si l’ancienne base est verrouillée) :
+
 ```powershell
 cd automl-backend
-venv\Scripts\activate
-mlflow ui --backend-store-uri sqlite:///mlflow.db
+.\venv\Scripts\activate
+mlflow ui --backend-store-uri sqlite:///mlflow.db --host 127.0.0.1 --port 5000
 ```
 
-✅ Résultat attendu :
-```
-[INFO] Starting gunicorn
-[INFO] Listening at: http://127.0.0.1:5000
-```
-
-### Terminal 3 — React (Front-End)
+### Terminal 3 — React
 
 ```powershell
 cd automl-frontend
 npm start
 ```
 
-✅ Résultat attendu : ouverture automatique de `http://localhost:3000`
+Si le port 3000 est pris, React propose **3001** — le CORS backend l’accepte par défaut.
 
 ---
 
-## 🌐 URLs des services
+## Authentification JWT
 
-| Service | URL | Description |
-|---------|-----|-------------|
-| ⚛️ Application | http://localhost:3000 | Interface utilisateur React |
-| ⚡ API FastAPI | http://localhost:8000 | Back-End REST |
-| 📖 API Docs | http://localhost:8000/docs | Documentation Swagger auto |
-| 🔬 MLflow UI | http://localhost:5000 | Tableau de bord MLflow |
+### Compte par défaut
 
----
+| Champ | Valeur |
+|--------|--------|
+| Email | `admin@automl.local` (ou `INIT_ADMIN_EMAIL`) |
+| Mot de passe | `admin123` (ou `INIT_ADMIN_PASSWORD`) |
 
-## ✨ Fonctionnalités
+Créé automatiquement si `automl-backend/data/users.json` n’existe pas.
 
-### 📁 Upload de Dataset
-- Drag & drop ou sélection de fichier CSV
-- Compatible avec **n'importe quel dataset** CSV
-- Encodages supportés : UTF-8, Latin-1, CP1252, ISO-8859-1
-- Aperçu des 10 premières lignes
-- Statistiques automatiques (lignes, colonnes, valeurs nulles)
-- **Auto-détection** du type de chaque colonne
-
-### ⚙️ Configuration Intelligente
-- Sélection de la **variable cible** avec analyse automatique
-- **Auto-détection** Classification vs Régression
-- Affichage du nombre de valeurs uniques par colonne
-- Sélection multi-features avec filtre numérique/catégoriel
-- Choix du split Train/Test (10% à 40%)
-- Nom de l'expérience MLflow personnalisable
-
-### 🤖 Entraînement ML
-- **6 algorithmes de Classification** : Random Forest, SVM, Logistic Regression, KNN, Decision Tree, Naive Bayes
-- **6 algorithmes de Régression** : Random Forest, Linear Regression, Ridge, Lasso, SVR, Decision Tree
-- Encodage automatique des variables catégorielles
-- Gestion des valeurs manquantes
-- Normalisation StandardScaler
-- Cross-validation 5-fold
-
-### 📊 Résultats & Visualisations
-- **Métriques Classification** : Accuracy, F1-Score, Precision, Recall, AUC-ROC, CV Score
-- **Métriques Régression** : R², RMSE, MAE, Train RMSE, CV R²
-- Graphique de comparaison des modèles
-- Analyse Overfitting (Train vs Test)
-- Feature Importance (pour Random Forest et Decision Tree)
-- Matrice de Confusion interactive
-- Tableau comparatif exportable en CSV
-
-### 🔬 MLflow Integration
-- Tracking automatique de **tous les runs**
-- Logging des paramètres, métriques et artefacts
-- **Model Registry** avec versioning
-- Panel MLflow intégré dans l'interface React
-- Rollback vers versions précédentes
-- Lien direct vers MLflow UI
-
----
-
-## 📁 Structure du projet
-
-```
-automl-studio-complet/
-│
-├── automl-backend/                 ← Back-End Python
-│   ├── main.py                     ← API FastAPI + logique ML
-│   ├── requirements.txt            ← Dépendances Python
-│   ├── README.md                   ← Ce fichier
-│   ├── mlflow.db                   ← Base de données MLflow (auto-créée)
-│   └── venv/                       ← Environnement virtuel (à créer)
-│
-└── ml-generic/                     ← Sources Front-End React
-    └── src/
-        ├── App.jsx                 ← Composant principal + navigation
-        ├── App.css                 ← Styles globaux (thème vert médical)
-        ├── api.js                  ← Couche d'appels API vers FastAPI
-        └── components/
-            ├── UploadStep.jsx      ← Étape 1 : Upload CSV
-            ├── ConfigStep.jsx      ← Étape 2 : Configuration ML
-            ├── Dashboard.jsx       ← Étape 3 : Résultats & graphiques
-            └── MLflowPanel.jsx     ← Panel latéral MLflow
-```
-
----
-
-## 🔌 API Endpoints
+### Endpoints publics
 
 | Méthode | Endpoint | Description |
 |---------|----------|-------------|
-| `GET` | `/health` | Vérification état du serveur |
-| `POST` | `/upload` | Upload d'un fichier CSV |
-| `POST` | `/train` | Lancer l'entraînement ML |
-| `GET` | `/experiments` | Liste des expériences MLflow |
-| `GET` | `/experiments/{name}/runs` | Runs d'une expérience |
-| `GET` | `/models` | Modèles dans le registry MLflow |
-| `GET` | `/stats` | Statistiques globales |
+| `GET` | `/auth/config` | Auth activée ou non |
+| `POST` | `/auth/register` | Inscription → JWT |
+| `POST` | `/auth/login` | Connexion → JWT |
 
-### Exemple d'appel `/train`
+### Routes protégées
+
+Header requis :
+
+```http
+Authorization: Bearer <access_token>
+```
+
+Exemples : `/upload`, `/preprocess`, `/train`, `/report`, `/experiments`, `/stats`.
+
+### Exemple curl
+
+```bash
+curl -X POST http://localhost:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"admin@automl.local\",\"password\":\"admin123\"}"
+```
+
+### Fichiers auth
+
+| Fichier | Rôle |
+|---------|------|
+| `automl-backend/auth.py` | JWT, utilisateurs JSON |
+| `automl-backend/data/users.json` | Comptes (gitignore) |
+| `automl-frontend/src/authStorage.js` | Token localStorage |
+| `automl-frontend/src/components/LoginPage.jsx` | UI connexion |
+
+---
+
+## Parcours utilisateur
+
+1. **Connexion** (ou `AUTH_DISABLED=true`)
+2. **Upload** — CSV, aperçu
+3. **Nettoyage** — options puis validation
+4. **Configuration** — cible, tâche, features, algorithmes, expérience MLflow
+5. **Résultats** — entraînement automatique au chargement du dashboard
+6. **Rapport** — bouton sur le meilleur modèle (timeout front ~120 s)
+7. **Historique / MLflow** — panneaux depuis l’en-tête
+
+### Choisir la cible
+
+| Profil | Tâche |
+|--------|--------|
+| Peu de classes / booléen / catégoriel | Classification |
+| Numérique continue | Régression |
+| Identifiant unique par ligne | **Ne pas** utiliser comme cible |
+
+---
+
+## Rapport d’analyse (4 questions)
+
+Généré pour le **meilleur modèle** (`best_algo_id` après `/train`).
+
+| # | Thème | Contenu |
+|---|--------|---------|
+| Q1 | Importance des features | Barres + tableau + interprétation |
+| Q2 | Stabilité | Variation selon `random_state` |
+| Q3 | Erreurs | Matrice de confusion / scatter, exemples |
+| Q4 | Biais / variance | Courbes train vs test, tableau overfitting |
+
+Export Markdown depuis le modal.  
+Backend : `report_generator.py`, `report_visuals.py` — Front : `ReportPanel.jsx`, `reportPayload.js`.
+
+---
+
+## Historique et statistiques
+
+Le panneau **Historique** (`Historypanel.jsx`) affiche les runs MLflow de l’expérience sélectionnée :
+
+- **Runs** : algorithme (icône + nom), tâche, cible, métriques, filtre / tri / export CSV
+- **Models** : registry MLflow (si activé)
+- **Statistiques** : runs par algorithme, classification vs régression, totaux globaux (`GET /stats`)
+
+L’API renvoie pour chaque run :
+
+- `algo` — id court (`rf`, `svm`, `dt`…)
+- `algo_name` — libellé affiché (`Random Forest`, etc.)
+
+Libellés partagés : `automl-frontend/src/algoMeta.js`.
+
+---
+
+## Structure du projet
+
+```
+automl-studio-complet/
+├── README.md
+├── .gitignore
+├── .env.example
+│
+├── automl-backend/
+│   ├── main.py                 # API FastAPI
+│   ├── auth.py                 # JWT
+│   ├── run_dev.py              # Lancement dev (reload safe)
+│   ├── mlflow_utils.py         # Bootstrap DB, cleanup, reset
+│   ├── report_generator.py
+│   ├── report_visuals.py
+│   ├── requirements.txt
+│   ├── datasets/               # CSV persistés (gitignore)
+│   ├── data/users.json         # Comptes (gitignore)
+│   ├── mlflow.db               # Généré (gitignore)
+│   └── mlruns/                 # Artefacts MLflow (gitignore)
+│
+└── automl-frontend/
+    ├── package.json
+    └── src/
+        ├── App.jsx
+        ├── api.js
+        ├── authStorage.js
+        ├── algoMeta.js
+        ├── reportPayload.js
+        └── components/
+            ├── LoginPage.jsx
+            ├── UploadStep.jsx
+            ├── PreprocessStep.jsx
+            ├── ConfigStep.jsx
+            ├── Dashboard.jsx
+            ├── ReportPanel.jsx
+            ├── MLflowPanel.jsx
+            └── Historypanel.jsx
+```
+
+---
+
+## API REST
+
+| Méthode | Endpoint | Auth | Description |
+|---------|----------|------|-------------|
+| `GET` | `/` | — | Infos API |
+| `GET` | `/health` | — | Santé + espace disque |
+| `POST` | `/auth/register` | — | Inscription |
+| `POST` | `/auth/login` | — | Connexion |
+| `GET` | `/auth/me` | JWT | Profil |
+| `GET` | `/auth/config` | — | Config auth |
+| `POST` | `/upload` | JWT | Upload CSV |
+| `POST` | `/preprocess` | JWT | Nettoyage |
+| `POST` | `/train` | JWT | Entraînement multi-algos |
+| `POST` | `/report` | JWT | Rapport d’analyse |
+| `POST` | `/predict` | JWT | Prédiction via `run_id` |
+| `GET` | `/experiments` | JWT | Liste expériences |
+| `GET` | `/experiments/{name}/runs` | JWT | Runs formatés (`algo`, `algo_name`) |
+| `GET` | `/models` | JWT | Model Registry |
+| `GET` | `/stats` | JWT | Totaux, runs par algo, best accuracy/R² |
+| `POST` | `/maintenance/cleanup` | JWT | Purge anciens runs |
+| `POST` | `/maintenance/reset` | JWT | Reset MLflow (destructif) |
+
+Documentation interactive : **http://localhost:8000/docs**
+
+### Exemple `POST /train`
 
 ```json
-POST http://localhost:8000/train
 {
-  "dataset_id": "ds_1234567890",
+  "dataset_id": "ds_1778494906",
   "task_type": "classification",
-  "target": "Outcome",
-  "features": ["Glucose", "BMI", "Age", "Insulin"],
-  "algorithms": ["rf", "svm", "lr"],
+  "target": "city_tier",
+  "features": ["age", "order_value"],
+  "algorithms": ["rf", "svm", "dt"],
   "test_size": 0.2,
-  "experiment_name": "DiabetesML_v1"
+  "experiment_name": "AutoML_Studio"
 }
 ```
 
 ---
 
-## 🤖 Algorithmes disponibles
+## Algorithmes
 
 ### Classification
 
-| ID | Algorithme | Points forts |
-|----|-----------|-------------|
-| `rf` | Random Forest | Robuste, gère les données mixtes |
-| `svm` | SVM | Efficace en haute dimension |
-| `lr` | Logistic Regression | Simple, interprétable, rapide |
-| `knn` | KNN | Basé sur la similarité |
-| `dt` | Decision Tree | Très interprétable |
-| `nb` | Naive Bayes | Rapide, bon sur texte |
+| ID | Nom |
+|----|-----|
+| `rf` | Random Forest |
+| `svm` | SVM |
+| `lr` | Logistic Regression |
+| `knn` | KNN |
+| `dt` | Decision Tree |
+| `nb` | Naive Bayes |
 
 ### Régression
 
-| ID | Algorithme | Points forts |
-|----|-----------|-------------|
-| `rf` | Random Forest | Robuste, gère les outliers |
-| `lr` | Linear Regression | Simple et interprétable |
-| `ridge` | Ridge | Évite l'overfitting (L2) |
-| `lasso` | Lasso | Sélection de features (L1) |
-| `svr` | SVR | Support Vector Regression |
-| `dt` | Decision Tree | Arbre de régression |
+| ID | Nom |
+|----|-----|
+| `rf` | Random Forest |
+| `lr` | Linear Regression |
+| `ridge` | Ridge |
+| `lasso` | Lasso |
+| `svr` | SVR |
+| `dt` | Decision Tree |
+
+### Métriques
+
+- **Classification** : accuracy, F1, precision, recall, AUC (binaire), CV, matrice de confusion, temps
+- **Régression** : R², RMSE, MAE, CV R², temps
 
 ---
 
-## 📖 Utilisation
+## Variables d’environnement
 
-### Étape 1 — Préparer index.js
+Fichier modèle : **`.env.example`** (copier vers `automl-backend/.env`).
 
-Dans `automl-frontend/src/index.js`, s'assurer que le contenu est :
-
-```javascript
-import React from 'react';
-import ReactDOM from 'react-dom/client';
-import './index.css';
-import App from './App';
-
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);
-```
-
-### Étape 2 — Choisir la bonne colonne cible
-
-| Type de colonne | Tâche recommandée | Exemple |
-|----------------|------------------|---------|
-| 0/1, Oui/Non, catégories | Classification | `Outcome`, `activity`, `label` |
-| Nombre continu | Régression | `price`, `score`, `temperature` |
-| ID, nom unique | ❌ À éviter | `username`, `id`, `email` |
-
-### Étape 3 — Réactiver l'env à chaque session
-
-```powershell
-# À faire à chaque ouverture de terminal
-cd automl-backend
-venv\Scripts\activate
-```
+| Variable | Défaut | Description |
+|----------|--------|-------------|
+| `JWT_SECRET` | *(à changer)* | Clé signature JWT |
+| `JWT_EXPIRE_MINUTES` | `1440` | Durée token (min) |
+| `INIT_ADMIN_EMAIL` | `admin@automl.local` | Admin initial |
+| `INIT_ADMIN_PASSWORD` | `admin123` | Mot de passe admin |
+| `AUTH_DISABLED` | `false` | Désactiver JWT (dev) |
+| `MLFLOW_TRACKING_URI` | `sqlite:///mlflow.db` | URI tracking |
+| `MLFLOW_MAX_RUNS` | `20` | Runs max / expérience |
+| `MLFLOW_MAX_MODEL_VERSIONS` | `3` | Versions registry |
+| `MLFLOW_REGISTER_MODELS` | `false` | Enregistrer dans le registry |
+| `MAX_ROWS_FOR_SVM` | `5000` | Limite lignes SVM/SVR |
+| `CORS_ORIGINS` | *(liste par défaut)* | Origines explicites |
+| `CORS_ALLOW_ORIGIN_REGEX` | `localhost:\d+` | Regex dev |
+| `REACT_APP_API_URL` | `http://localhost:8000` | URL API (frontend) |
 
 ---
 
-## 🛠️ Dépannage
+## Dépannage
 
-### ❌ `UNIQUE constraint failed` (MLflow)
-**Cause** : L'expérience MLflow existe déjà.
-**Solution** : Déjà corrigé dans `main.py` avec `get_or_create_experiment()`.
+### API injoignable
 
-### ❌ `got 1 class` (SVM)
-**Cause** : La colonne cible n'a qu'une seule valeur dans le train set.
-**Solution** : Choisir une colonne avec au moins 2 valeurs distinctes. L'interface affiche maintenant un avertissement.
-
-### ❌ `numpy==2.0.0rc1` incompatible
-**Cause** : Python 3.14 incompatible.
-**Solution** : Utiliser Python 3.11 avec l'environnement virtuel.
-
-### ❌ `package.json not found`
-**Cause** : `npm install` lancé dans `ml-generic/` au lieu de `automl-frontend/`.
-**Solution** :
-```powershell
-npx create-react-app automl-frontend
-xcopy /E /Y "ml-generic\src\*" "automl-frontend\src\"
-cd automl-frontend && npm start
-```
-
-### ❌ Backend déconnecté (bandeau jaune)
-**Cause** : FastAPI n'est pas démarré.
-**Solution** :
 ```powershell
 cd automl-backend
-venv\Scripts\activate
-uvicorn main:app --reload
+.\venv\Scripts\activate
+python run_dev.py
 ```
 
-### ❌ `Failed to load resource 400`
-**Cause** : Mauvaise colonne cible choisie (une seule valeur unique).
-**Solution** : Retourner à la configuration et choisir une autre colonne cible.
+Vérifier : http://localhost:8000/health
+
+### `Failed to fetch` / CORS (login ou train)
+
+- Redémarrer le backend après mise à jour.
+- Front sur **3001** : accepté par défaut.
+- Pendant **train** : utiliser **`python run_dev.py`**, pas `uvicorn --reload` seul.
+- Gros CSV : entraînement long (timeout front train : 15 min).
+
+### `log_model() got an unexpected keyword argument 'name'`
+
+MLflow 2.13 utilise **`artifact_path`**, pas `name` — corrigé dans `main.py` ; redémarrer le backend.
+
+### `No module named 'pkg_resources'`
+
+```powershell
+.\venv\Scripts\pip.exe install "setuptools>=65.5.0,<81"
+pip install -r requirements.txt
+```
+
+### MLflow : `Can't locate revision` / DB corrompue
+
+1. Arrêter backend + `mlflow ui`.
+2. Supprimer `mlflow.db`, `mlflow.db-wal`, `mlflow.db-shm`, optionnellement `mlruns/`.
+3. Relancer `python run_dev.py`.
+
+Ou `POST /maintenance/reset` (JWT requis). Si bascule vers `mlflow_fresh.db`, aligner `mlflow ui --backend-store-uri sqlite:///mlflow_fresh.db`.
+
+### Historique : « unknown » / statistiques vides
+
+- Vérifier que les runs ont `params.algorithm` (ré-entraîner après mise à jour).
+- Choisir la bonne expérience (onglet `AutoML_Studio`).
+- Même URI MLflow entre backend et UI.
+
+### Connexion `422` / email invalide
+
+Email `admin@automl.local` accepté (validation assouplie). Vérifier API + `REACT_APP_API_URL`.
+
+### `401 Unauthorized`
+
+Reconnecter ; token expiré. Ou `AUTH_DISABLED=true` en dev.
+
+### `Dataset non trouvé`
+
+Refaire upload → preprocess → train, ou vérifier `datasets/{dataset_id}.csv`.
+
+### Disque plein
+
+`POST /maintenance/cleanup` ou supprimer `mlruns/` manuellement.
 
 ---
 
-## 📦 Dépendances principales
+## Publication Git
 
-### Back-End Python
-```
-fastapi==0.111.0
-uvicorn[standard]==0.29.0
-pydantic==2.7.1
-pandas>=2.0.0
-numpy>=1.24.0
-scikit-learn>=1.3.0
-mlflow>=2.10.0
-joblib>=1.3.0
-python-multipart==0.0.9
-```
+### À ne **pas** committer
 
-### Front-End React
-```
-react 18
-react-dom 18
+- `automl-backend/venv/`, `__pycache__/`
+- `automl-backend/mlruns/`, `mlflow.db`, `mlflow_fresh.db`
+- `automl-backend/datasets/*.csv`
+- `automl-backend/data/users.json`
+- `automl-frontend/node_modules/`, `build/`
+- `.env`, secrets, données personnelles
+
+### Avant le push
+
+1. `JWT_SECRET` fort en production (pas la valeur exemple).
+2. Changer `INIT_ADMIN_PASSWORD` après le 1er login.
+3. Choisir une **licence** (section ci-dessous).
+4. Remplacer `<URL_DU_REPO>` dans ce README par l’URL Git réelle.
+
+### Suggestion de message de commit initial
+
+```text
+feat: AutoML Studio — React + FastAPI + MLflow + rapport JWT
 ```
 
 ---
 
+## Contribution
 
+1. Fork du dépôt  
+2. Branche : `git checkout -b feature/ma-fonctionnalite`  
+3. Commits clairs  
+4. Pull request vers `main`
 
-*AutoML Studio v1.0 — Application professionnelle ML avec React + FastAPI + MLflow*
+---
+
+## Licence
+
+Projet académique / personnel — **à préciser** avant publication (ex. MIT, Apache-2.0).
+
+---
+
+**AutoML Studio** — React · FastAPI · scikit-learn · MLflow · JWT · Rapport d’analyse intégré

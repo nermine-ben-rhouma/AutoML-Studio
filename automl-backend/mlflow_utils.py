@@ -116,10 +116,59 @@ def reset_mlflow_artifacts() -> dict:
     if MLRUNS_DIR.exists():
         shutil.rmtree(MLRUNS_DIR, ignore_errors=True)
         removed.append(str(MLRUNS_DIR))
+    errors: list[str] = []
     for suffix in ("", "-wal", "-shm", "-journal"):
         p = Path(f"{db_path}{suffix}")
-        if p.exists():
+        if not p.exists():
+            continue
+        try:
             p.unlink(missing_ok=True)
             removed.append(str(p))
+        except OSError as exc:
+            errors.append(f"{p.name}: {exc}")
     MLRUNS_DIR.mkdir(parents=True, exist_ok=True)
-    return {"reset": True, "removed": removed}
+    out: dict = {"reset": not errors, "removed": removed}
+    if errors:
+        out["errors"] = errors
+        out["hint"] = (
+            "Arrêtez uvicorn et « mlflow ui » puis relancez, "
+            "ou appelez POST /maintenance/reset."
+        )
+    return out
+
+
+def bootstrap_mlflow_client(tracking_uri: str) -> tuple[MlflowClient, str]:
+    """
+    Initialise MLflow ; en cas de base SQLite corrompue (migration Alembic),
+    réinitialise mlflow.db + mlruns puis réessaie une fois.
+    Si mlflow.db est verrouillé (uvicorn/mlflow ui), bascule sur mlflow_fresh.db.
+    Retourne (client, uri_effective).
+    """
+    uri = tracking_uri
+
+    def _connect(target_uri: str) -> MlflowClient:
+        mlflow.set_tracking_uri(target_uri)
+        c = MlflowClient(tracking_uri=target_uri)
+        mlflow.search_experiments(max_results=1)
+        return c
+
+    try:
+        return _connect(uri), uri
+    except Exception as exc:
+        logger.warning(
+            "Échec connexion MLflow (%s). Réinitialisation du store local…", exc
+        )
+        reset_info = reset_mlflow_artifacts()
+        if reset_info.get("errors"):
+            fallback = "sqlite:///mlflow_fresh.db"
+            logger.warning(
+                "Impossible de supprimer mlflow.db (%s). Bascule sur %s",
+                reset_info["errors"],
+                fallback,
+            )
+            uri = fallback
+        try:
+            return _connect(uri), uri
+        except Exception as exc2:
+            logger.error("MLflow toujours indisponible après reset: %s", exc2)
+            raise

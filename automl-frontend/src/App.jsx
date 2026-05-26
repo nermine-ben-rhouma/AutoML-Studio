@@ -1,11 +1,13 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import UploadStep     from "./components/UploadStep";
 import PreprocessStep from "./components/PreprocessStep";
 import ConfigStep     from "./components/ConfigStep";
 import Dashboard      from "./components/Dashboard";
 import MLflowPanel    from "./components/MLflowPanel";
-import HistoryPanel   from "./components/Historypanel";   
-import { checkHealth, getStats } from "./api";
+import HistoryPanel   from "./components/Historypanel";
+import LoginPage      from "./components/LoginPage";
+import { checkHealth, getStats, fetchMe, getAuthConfig } from "./api";
+import { getToken, getStoredUser, clearAuth, setOnUnauthorized } from "./authStorage";
 import "./App.css";
 
 export default function App() {
@@ -16,14 +18,65 @@ export default function App() {
   const [backendOk, setBackendOk]     = useState(null);
   const [stats, setStats]             = useState(null);
   const [showMLflow, setShowMLflow]   = useState(false);
-  const [showHistory, setShowHistory] = useState(false);  
+  const [showHistory, setShowHistory] = useState(false);
+  const [user, setUser]               = useState(null);
+  const [authReady, setAuthReady]     = useState(false);
+  const [authEnabled, setAuthEnabled] = useState(true);
+
+  const handleLogout = useCallback(() => {
+    clearAuth();
+    setUser(null);
+    setStep("upload");
+    setDataset(null);
+    setConfig(null);
+    setStats(null);
+  }, []);
 
   useEffect(() => {
-    checkHealth().then(h => {
+    setOnUnauthorized(handleLogout);
+    return () => setOnUnauthorized(null);
+  }, [handleLogout]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const cfg = await getAuthConfig();
+        if (cancelled) return;
+        setAuthEnabled(cfg.auth_enabled !== false);
+        if (!cfg.auth_enabled) {
+          setUser({ email: "dev@local", full_name: "Mode sans auth" });
+          setAuthReady(true);
+          return;
+        }
+        const token = getToken();
+        if (token) {
+          try {
+            const me = await fetchMe();
+            if (!cancelled) setUser(me);
+          } catch {
+            clearAuth();
+          }
+        } else {
+          const stored = getStoredUser();
+          if (stored && !token) clearAuth();
+        }
+      } catch {
+        if (!cancelled) setAuthEnabled(true);
+      } finally {
+        if (!cancelled) setAuthReady(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    checkHealth().then((h) => {
       setBackendOk(!!h);
       if (h) getStats().then(setStats).catch(() => {});
     });
-  }, []);
+  }, [user]);
 
   const showNotif = (msg, type = "success") => {
     setNotif({ msg, type });
@@ -43,6 +96,23 @@ export default function App() {
     { id: "dashboard",  icon: "📊", label: "Résultats" },
   ];
   const stepIndex = STEPS.findIndex(s => s.id === step);
+
+  if (!authReady) {
+    return (
+      <div className="auth-page">
+        <p className="auth-loading">Chargement…</p>
+      </div>
+    );
+  }
+
+  if (authEnabled && !user) {
+    return (
+      <LoginPage
+        onSuccess={setUser}
+        defaultEmail="admin@automl.local"
+      />
+    );
+  }
 
   return (
     <div className="app-root">
@@ -66,20 +136,36 @@ export default function App() {
         </div>
 
         <div className="header-right">
+          {user && (
+            <div className="header-user" title={user.email}>
+              👤 {user.full_name || user.email}
+            </div>
+          )}
           {stats && (
-            <div className="header-stats">
-              <span>🔬 {stats.total_runs} runs</span>
+            <div className="header-stats" title={stats.mlflow_uri || ""}>
+              <span>🔬 {stats.total_runs ?? 0} runs</span>
               <span>·</span>
-              <span>🧪 {stats.total_experiments} exp.</span>
+              <span>🧪 {stats.total_experiments ?? 0} exp.</span>
+              {stats.best_accuracy != null && (
+                <>
+                  <span>·</span>
+                  <span>🏆 {(stats.best_accuracy * 100).toFixed(1)}%</span>
+                </>
+              )}
             </div>
           )}
 
-          {/* ── boutons panneaux ── */}
-          <button className="btn-mlflow"   onClick={() => setShowMLflow(true)}>📊 MLflow</button>
-          <button className="btn-history"  onClick={() => setShowHistory(true)}>📋 Historique</button> {/* ← AJOUT */}
+          <button className="btn-mlflow" onClick={() => setShowMLflow(true)}>📊 MLflow</button>
+          <button className="btn-history" onClick={() => setShowHistory(true)}>📋 Historique</button>
 
           {step !== "upload" && (
             <button className="btn-reset" onClick={handleReset}>↩ Nouveau</button>
+          )}
+
+          {authEnabled && (
+            <button type="button" className="btn-logout" onClick={handleLogout}>
+              Déconnexion
+            </button>
           )}
 
           <div className={`status-pill ${backendOk === false ? "status-error" : ""}`}>
@@ -97,21 +183,18 @@ export default function App() {
         <div className="backend-banner">
           ⚠️ Backend non démarré — Ouvre un terminal et lance :
           <code> cd automl-backend && uvicorn main:app --reload</code>
-          <span> puis </span>
-          <code>mlflow ui --backend-store-uri sqlite:///mlflow.db</code>
         </div>
       )}
 
       <main className="app-main">
-        {step === "upload"     && <UploadStep     onUpload={handleUpload}                           onNotif={showNotif} backendOk={backendOk} />}
-        {step === "preprocess" && <PreprocessStep dataset={dataset}                                 onDone={handlePreprocess} onBack={() => setStep("upload")} onNotif={showNotif} />}
-        {step === "config"     && <ConfigStep     dataset={dataset}                                 onConfig={handleConfig} onBack={() => setStep("preprocess")} onNotif={showNotif} />}
-        {step === "dashboard"  && <Dashboard      dataset={dataset} config={config}                 onReset={handleReset} onNotif={showNotif} onRefreshStats={refreshStats} />}
+        {step === "upload"     && <UploadStep     onUpload={handleUpload} onNotif={showNotif} backendOk={backendOk} />}
+        {step === "preprocess" && <PreprocessStep dataset={dataset} onDone={handlePreprocess} onBack={() => setStep("upload")} onNotif={showNotif} />}
+        {step === "config"     && <ConfigStep     dataset={dataset} onConfig={handleConfig} onBack={() => setStep("preprocess")} onNotif={showNotif} />}
+        {step === "dashboard"  && <Dashboard      dataset={dataset} config={config} onReset={handleReset} onNotif={showNotif} onRefreshStats={refreshStats} />}
       </main>
 
-      {/* Panneaux latéraux */}
       {showMLflow  && <MLflowPanel  onClose={() => setShowMLflow(false)}  onNotif={showNotif} />}
-      {showHistory && <HistoryPanel onClose={() => setShowHistory(false)} onNotif={showNotif} />} {/* ← AJOUT */}
+      {showHistory && <HistoryPanel onClose={() => setShowHistory(false)} onNotif={showNotif} />}
 
       {notif && (
         <div className={`notif notif-${notif.type}`}>

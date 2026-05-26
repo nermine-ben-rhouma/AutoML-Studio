@@ -1,6 +1,5 @@
 import { useState } from "react";
-
-const BASE_URL = "http://localhost:8000";
+import { preprocessDataset } from "../api";
 
 export default function PreprocessStep({ dataset, onDone, onBack, onNotif }) {
   const [options, setOptions] = useState({
@@ -29,16 +28,10 @@ export default function PreprocessStep({ dataset, onDone, onBack, onNotif }) {
   const handleClean = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${BASE_URL}/preprocess`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ dataset_id: dataset.dataset_id, ...options }),
+      const data = await preprocessDataset({
+        dataset_id: dataset.dataset_id,
+        ...options,
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: res.statusText }));
-        throw new Error(err.detail || "Erreur serveur");
-      }
-      const data = await res.json();
       setResult(data);
       onNotif(`✅ Dataset nettoyé — ${data.rows_after} lignes restantes`, "success");
     } catch (e) {
