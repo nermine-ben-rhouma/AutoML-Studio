@@ -74,22 +74,22 @@ def _assignment_sections(task_type: str, model_name: str, algo_id: str) -> List[
     return [
         {
             "id": "1",
-            "title": "Question 1 : Importance des Features",
+            "title": "Importance des Features",
             "subtitle": f"Q1 — Feature Importance ({model_name})",
         },
         {
             "id": "2",
-            "title": "Question 2 : Stabilité des Prédictions",
+            "title": "Stabilité des Prédictions",
             "subtitle": "Q2 — Stabilité des prédictions",
         },
         {
             "id": "3",
-            "title": "Question 3 : Analyse des Erreurs",
+            "title": "Analyse des Erreurs",
             "subtitle": "Q3 — Analyse des Erreurs",
         },
         {
             "id": "4",
-            "title": "Question 4 : Biais et Variance (Hyperparamètres)",
+            "title": "Biais et Variance (Hyperparamètres)",
             "subtitle": "Q4 — Analyse Biais / Variance",
         },
     ]

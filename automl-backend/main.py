@@ -1,7 +1,9 @@
 # ============================================================
 # AutoML Studio — Back-End FastAPI + MLflow
 # ============================================================
-from fastapi import Depends, FastAPI, UploadFile, File, HTTPException
+from fastapi import Depends, FastAPI, UploadFile, File, HTTPException, Request
+from cryptography.fernet import Fernet
+import base64
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Annotated, List, Optional, Dict, Any
@@ -107,6 +109,11 @@ app = FastAPI(
     description="API professionnelle ML avec MLflow tracking",
     version="1.0.0"
 )
+
+# Import metrics middleware
+from metrics import MetricsMiddleware
+
+app.add_middleware(MetricsMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -220,9 +227,52 @@ def _format_mlflow_run_row(row) -> Dict[str, Any]:
 datasets_store: Dict[str, pd.DataFrame] = {}
 
 
+_DATA_DIR = _BACKEND_DIR / "data"
+_DATA_DIR.mkdir(parents=True, exist_ok=True)
+_KEY_FILE = _DATA_DIR / "encryption.key"
+MAX_UPLOAD_SIZE = int(os.getenv("MAX_UPLOAD_SIZE", str(50 * 1024 * 1024)))  # 50 Mo par défaut
+_MAX_DATASET_ROWS = int(os.getenv("MAX_DATASET_ROWS", "500000"))  # Protection DoS : 500k lignes
+_MAX_DATASET_COLS = int(os.getenv("MAX_DATASET_COLS", "500"))      # Protection DoS : 500 colonnes
+_TEXT_FORMATS = {".csv", ".tsv", ".json"}                          # Formats texte (seuls vérifiés pour null bytes)
+
+
+def _get_encryption_cipher() -> Fernet:
+    key = os.getenv("DATA_ENCRYPTION_KEY")
+    if not key:
+        if _KEY_FILE.exists():
+            key = _KEY_FILE.read_text(encoding="utf-8").strip()
+        else:
+            key = Fernet.generate_key().decode("utf-8")
+            try:
+                _KEY_FILE.write_text(key, encoding="utf-8")
+                # Restreindre les permissions : lecture/écriture owner uniquement (Unix/Linux)
+                if os.name != "nt":
+                    os.chmod(_KEY_FILE, 0o600)
+            except OSError as e:
+                logging.warning("Could not save encryption key: %s", e)
+    
+    try:
+        decoded = base64.urlsafe_b64decode(key.encode("utf-8"))
+        if len(decoded) != 32:
+            raise ValueError("La clé doit faire 32 octets après décodage base64.")
+        return Fernet(key.encode("utf-8"))
+    except Exception as e:
+        logging.error("Clé DATA_ENCRYPTION_KEY invalide : %s. Utilisation d'une clé temporaire.", e)
+        fallback_key = Fernet.generate_key()
+        return Fernet(fallback_key)
+
+
 def _persist_dataset(dataset_id: str, df: pd.DataFrame) -> None:
     try:
-        df.to_csv(_DATASETS_DIR / f"{dataset_id}.csv", index=False)
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False)
+        csv_bytes = csv_buffer.getvalue().encode("utf-8")
+        
+        cipher = _get_encryption_cipher()
+        encrypted_bytes = cipher.encrypt(csv_bytes)
+        
+        path = _DATASETS_DIR / f"{dataset_id}.csv"
+        path.write_bytes(encrypted_bytes)
     except OSError as e:
         logging.warning("Could not persist dataset %s: %s", dataset_id, e)
 
@@ -232,7 +282,23 @@ def _load_dataset(dataset_id: str) -> pd.DataFrame:
         return datasets_store[dataset_id].copy()
     path = _DATASETS_DIR / f"{dataset_id}.csv"
     if path.exists():
-        df = pd.read_csv(path)
+        file_bytes = path.read_bytes()
+        
+        # Tentative de déchiffrement
+        cipher = _get_encryption_cipher()
+        try:
+            decrypted_bytes = cipher.decrypt(file_bytes)
+            csv_text = decrypted_bytes.decode("utf-8")
+        except Exception:
+            # Échec du déchiffrement -> rétrocompatibilité avec les datasets non chiffrés
+            logging.info("Le déchiffrement a échoué pour %s. Essai de lecture en texte clair.", dataset_id)
+            try:
+                csv_text = file_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                raise HTTPException(500, "Le fichier de données est corrompu ou illisible.")
+        
+        buf = io.StringIO(csv_text)
+        df = pd.read_csv(buf)
         datasets_store[dataset_id] = df
         return df.copy()
     raise HTTPException(
@@ -311,6 +377,23 @@ def health():
     }
 
 
+@app.get("/metrics")
+def metrics():
+    """Endpoint public pour Prometheus. Actualise la télémétrie avant de l'exporter."""
+    from metrics import update_active_users_count, update_infra_metrics
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+    from fastapi import Response
+    
+    update_active_users_count()
+    update_infra_metrics()
+    
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST,
+        headers={"Cache-Control": "no-cache"}
+    )
+
+
 @app.post("/maintenance/cleanup")
 def maintenance_cleanup(
     user: CurrentUser,
@@ -326,9 +409,22 @@ def maintenance_cleanup(
 
 @app.post("/maintenance/reset")
 def maintenance_reset(user: CurrentUser):
-    """Réinitialise mlruns/ et mlflow.db (toutes les expériences seront perdues)."""
+    """Réinitialise mlruns/ et mlflow.db + supprime tous les datasets chiffrés sur disque."""
     try:
-        return reset_mlflow_artifacts()
+        result = reset_mlflow_artifacts()
+        # Vider le cache mémoire des datasets
+        datasets_store.clear()
+        # Supprimer physiquement tous les datasets chiffrés
+        deleted_datasets = []
+        for f in _DATASETS_DIR.glob("*.csv"):
+            try:
+                f.unlink()
+                deleted_datasets.append(f.name)
+            except OSError as exc:
+                logging.warning("Impossible de supprimer le dataset %s : %s", f.name, exc)
+        result["datasets_deleted"] = len(deleted_datasets)
+        result["datasets_store_cleared"] = True
+        return result
     except OSError as e:
         raise HTTPException(507, str(e)) from e
 
@@ -358,16 +454,99 @@ def read_dataframe(content: bytes, filename: str) -> pd.DataFrame:
     if fmt == "parquet": return pd.read_parquet(buf)
     raise ValueError(f"Format non géré : {fmt}")
 
+def validate_and_sanitize_csv(content: bytes, filename: str) -> pd.DataFrame:
+    ext = os.path.splitext(filename.lower())[1]
+
+    # 1. Octets nuls — vérification uniquement pour les formats TEXTE (CSV/TSV/JSON)
+    #    Les formats binaires (Excel, Parquet) contiennent légitimement des octets nuls.
+    if ext in _TEXT_FORMATS and b'\x00' in content:
+        raise ValueError(
+            "Le fichier contient des octets nuls (null bytes). "
+            "Il s'agit probablement d'un fichier binaire renommé en .csv."
+        )
+
+    # 2. Lecture du DataFrame pour valider la structure
+    try:
+        df = read_dataframe(content, filename)
+    except Exception as e:
+        raise ValueError(f"Structure de fichier invalide ou corrompue : {e}")
+
+    # 3. Vérification de la présence de données minimales
+    if df.empty or len(df) < 1:
+        raise ValueError("Le fichier importé est vide.")
+    if len(df.columns) < 1:
+        raise ValueError("Le fichier doit contenir au moins une colonne de données.")
+
+    # 4. Limites de dimensions — protection contre les dénis de service (DoS)
+    if len(df) > _MAX_DATASET_ROWS:
+        raise ValueError(
+            f"Le fichier dépasse la limite de {_MAX_DATASET_ROWS:,} lignes "
+            f"({len(df):,} lignes détectées). Réduisez votre dataset avant l'import."
+        )
+    if len(df.columns) > _MAX_DATASET_COLS:
+        raise ValueError(
+            f"Le fichier dépasse la limite de {_MAX_DATASET_COLS} colonnes "
+            f"({len(df.columns)} colonnes détectées)."
+        )
+
+    # 5. Assainissement des noms de colonnes (caractères dangereux)
+    sanitized_cols = [
+        re.sub(r'[\x00\r\n<>]', '', str(c)).strip()[:255] or f"col_{i}"
+        for i, c in enumerate(df.columns)
+    ]
+    # Résolution des doublons après assainissement
+    seen: Dict[str, int] = {}
+    deduped_cols = []
+    for col in sanitized_cols:
+        if col in seen:
+            seen[col] += 1
+            deduped_cols.append(f"{col}_{seen[col]}")
+        else:
+            seen[col] = 0
+            deduped_cols.append(col)
+    df.columns = deduped_cols
+
+    # 6. Protection contre les injections de formules CSV (OWASP CSV Injection)
+    for col in df.select_dtypes(include=["object"]).columns:
+        df[col] = df[col].apply(
+            lambda x: f"'{x}" if isinstance(x, str) and len(x) > 0 and x[0] in ('=', '+', '-', '@') else x
+        )
+
+    return df
+
+
 # ── UPLOAD DATASET ───────────────────────────────────────────
 @app.post("/upload")
-async def upload_dataset(user: CurrentUser, file: UploadFile = File(...)):
-    content = await file.read()
+async def upload_dataset(request: Request, user: CurrentUser, file: UploadFile = File(...)):
+    # 1. Vérification de l'en-tête Content-Length (si disponible)
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_UPLOAD_SIZE:
+        raise HTTPException(
+            413,
+            f"Fichier trop volumineux. La taille maximale autorisée est de {MAX_UPLOAD_SIZE // (1024*1024)} Mo."
+        )
+
+    # 2. Lecture sécurisée par chunks pour éviter la saturation de la mémoire vive
+    content = bytearray()
+    chunk_size = 1024 * 1024  # 1 Mo
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        content.extend(chunk)
+        if len(content) > MAX_UPLOAD_SIZE:
+            raise HTTPException(
+                413,
+                f"Fichier trop volumineux. La taille maximale autorisée est de {MAX_UPLOAD_SIZE // (1024*1024)} Mo."
+            )
+
+    # 3. Validation de sécurité et assainissement
     try:
-        df = read_dataframe(content, file.filename)
+        df = validate_and_sanitize_csv(bytes(content), file.filename)
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
-        raise HTTPException(400, f"Erreur lecture du fichier : {str(e)}")
+        raise HTTPException(400, f"Erreur de validation du fichier : {str(e)}")
 
     dataset_id = f"ds_{int(time.time())}"
     datasets_store[dataset_id] = df

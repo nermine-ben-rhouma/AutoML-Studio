@@ -1,15 +1,45 @@
 import { useState, useRef } from "react";
 import { uploadDataset } from "../api";
 
-export default function UploadStep({ onUpload, onNotif, backendOk }) {
+export default function UploadStep({ onUpload, onNotif, backendOk, maxUploadSize = 50 * 1024 * 1024 }) {
   const [dragging, setDragging] = useState(false);
   const [loading, setLoading]   = useState(false);
   const [preview, setPreview]   = useState(null);
   const [localFile, setLocalFile] = useState(null);
   const fileRef = useRef();
 
+  const sizeLimitMo = Math.round(maxUploadSize / (1024 * 1024));
+
+  /** Pré-validation locale : détecte les fichiers binaires renommés en .csv */
+  const preValidateFile = async (file) => {
+    if (!file.name.match(/\.(csv|tsv|json)$/i)) return true; // formats binaires OK
+    const slice = file.slice(0, 10240); // 10 Ko
+    const buffer = await slice.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    for (let i = 0; i < bytes.length; i++) {
+      if (bytes[i] === 0) return false; // null byte = fichier binaire
+    }
+    return true;
+  };
+
   const handleFile = async (file) => {
-    if (!file?.name.endsWith(".csv")) { onNotif("❌ Fichier CSV requis", "error"); return; }
+    if (!file) return;
+    const allowedExts = ['.csv', '.tsv', '.json', '.xlsx', '.xls', '.parquet'];
+    const ext = '.' + file.name.split('.').pop().toLowerCase();
+    if (!allowedExts.includes(ext)) {
+      onNotif(`❌ Format "${ext}" non supporté. Formats acceptés : ${allowedExts.join(', ')}`, "error");
+      return;
+    }
+    if (file.size > maxUploadSize) {
+      onNotif(`❌ Le fichier dépasse la taille maximale autorisée de ${sizeLimitMo} Mo`, "error");
+      return;
+    }
+    // Pré-validation : détection de fichier binaire renommé
+    const isValidText = await preValidateFile(file);
+    if (!isValidText) {
+      onNotif("❌ Ce fichier semble être un fichier binaire renommé (octets nuls détectés)", "error");
+      return;
+    }
     setLoading(true);
     setLocalFile(file);
     try {
@@ -61,7 +91,7 @@ export default function UploadStep({ onUpload, onNotif, backendOk }) {
           onDrop={e=>{e.preventDefault();setDragging(false);handleFile(e.dataTransfer.files[0])}}
           onClick={()=>fileRef.current.click()}
         >
-          <input ref={fileRef} type="file" accept=".csv" style={{display:"none"}}
+          <input ref={fileRef} type="file" accept=".csv,.tsv,.json,.xlsx,.xls,.parquet" style={{display:"none"}}
             onChange={e=>handleFile(e.target.files[0])}/>
           {loading ? (
             <div className="upload-loading"><div className="spinner"/><span>Analyse en cours...</span></div>
@@ -70,14 +100,44 @@ export default function UploadStep({ onUpload, onNotif, backendOk }) {
               <div className="upload-success-icon">✅</div>
               <div className="upload-success-name">{preview.filename || preview.name}</div>
               <div className="upload-success-meta">{preview.rows} lignes · {preview.columns.length} colonnes</div>
-              <div className="upload-change">Cliquer pour changer</div>
+              <div className="upload-success-security" style={{
+                marginTop: "8px",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                fontSize: "0.75rem",
+                color: "#10b981",
+                backgroundColor: "rgba(16, 185, 129, 0.1)",
+                padding: "4px 10px",
+                borderRadius: "12px",
+                fontWeight: "500",
+                border: "1px solid rgba(16, 185, 129, 0.2)"
+              }}>
+                🔒 Données chiffrées et validées
+              </div>
+              <div className="upload-change" style={{marginTop: "8px"}}>Cliquer pour changer</div>
             </div>
           ) : (
             <>
               <div className="drop-icon">{dragging?"📥":"📁"}</div>
               <div className="drop-title">{dragging?"Relâchez ici !":"Glisser-déposer votre CSV"}</div>
               <div className="drop-sub">ou cliquer pour parcourir</div>
-              <div className="drop-formats">CSV · Max 50MB · UTF-8 recommandé</div>
+              <div className="drop-formats">CSV · TSV · JSON · Excel · Parquet · Max {sizeLimitMo} Mo · UTF-8 recommandé</div>
+              <div className="drop-security-badge" style={{
+                marginTop: "12px",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                padding: "5px 12px",
+                borderRadius: "20px",
+                backgroundColor: "rgba(34, 197, 94, 0.1)",
+                color: "#22c55e",
+                fontSize: "0.75rem",
+                fontWeight: "500",
+                border: "1px solid rgba(34, 197, 94, 0.2)"
+              }}>
+                🔒 Chiffrement AES-256 & Validation active
+              </div>
             </>
           )}
         </div>

@@ -28,3 +28,7 @@ Thumbs.db
 
 # Assets locaux temporaires
 assets/
+
+# Clé de chiffrement des données
+automl-backend/data/encryption.key
+

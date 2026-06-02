@@ -180,6 +180,8 @@ def register_user(data: UserRegister) -> Dict[str, Any]:
 def authenticate_user(email: str, password: str) -> Dict[str, Any]:
     user = _find_user_by_email(email)
     if not user or not _verify_password(password, user["password_hash"]):
+        from metrics import FAILED_LOGINS
+        FAILED_LOGINS.inc()
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
             "Email ou mot de passe incorrect.",
@@ -195,6 +197,8 @@ async def get_current_user(
         return {"id": "dev", "email": "dev@local", "full_name": "Dev (auth off)"}
 
     if credentials is None or not credentials.credentials:
+        from metrics import AUTH_ERRORS
+        AUTH_ERRORS.inc()
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
             "Token manquant — connectez-vous.",
@@ -205,8 +209,12 @@ async def get_current_user(
         payload = decode_token(token)
         user_id = payload.get("sub")
         if not user_id:
+            from metrics import AUTH_ERRORS
+            AUTH_ERRORS.inc()
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token invalide.")
     except JWTError:
+        from metrics import AUTH_ERRORS
+        AUTH_ERRORS.inc()
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
             "Token expiré ou invalide.",
@@ -215,7 +223,14 @@ async def get_current_user(
 
     user = _find_user_by_id(str(user_id))
     if not user:
+        from metrics import AUTH_ERRORS
+        AUTH_ERRORS.inc()
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Utilisateur introuvable.")
+        
+    # Authentification réussie : enregistrer l'utilisateur actif
+    from metrics import track_active_user
+    track_active_user(user["id"])
+    
     return _user_public(user)
 
 
@@ -252,4 +267,6 @@ def auth_config():
     return {
         "auth_enabled": not AUTH_DISABLED,
         "token_expire_minutes": JWT_EXPIRE_MINUTES,
+        "max_upload_size": int(os.getenv("MAX_UPLOAD_SIZE", str(50 * 1024 * 1024))),
     }
+

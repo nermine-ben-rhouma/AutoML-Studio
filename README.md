@@ -110,7 +110,56 @@ Stack : **React 19** · **FastAPI** · **scikit-learn** · **MLflow 2.13** · **
 - Compte admin auto si `data/users.json` vide
 - `AUTH_DISABLED=true` pour développement sans login
 
+### Protection des données
+
+| Mécanisme | Détail |
+|-----------|--------|
+| **Chiffrement** | Datasets chiffrés sur disque avec **Fernet (AES-128-CBC + HMAC-SHA256)**, clé auto-générée ou via `DATA_ENCRYPTION_KEY` |
+| **Validation CSV** | Détection octets nuls (fichiers binaires déguisés), injection de formules (OWASP), noms de colonnes sanitisés |
+| **Limite upload** | Configurable via `MAX_UPLOAD_SIZE` (défaut 50 Mo), vérification front + back |
+| **Limites dimensions** | Max 500 000 lignes, 500 colonnes (configurable via `MAX_DATASET_ROWS`, `MAX_DATASET_COLS`) |
+| **Pré-validation locale** | Le frontend détecte les fichiers binaires renommés en `.csv` avant l'envoi au serveur |
+| **Permissions clé** | `encryption.key` créé en `0600` (Unix), ignoré par `.gitignore` |
+| **Reset complet** | `POST /maintenance/reset` efface MLflow **et** tous les datasets chiffrés sur disque |
+
+
+### Supervision & Métriques en Temps Réel
+
+L'application intègre un exportateur de télémétrie natif et sécurisé exposant les métriques au format standard Prometheus sur le endpoint public `/metrics`. Une stack complète de monitoring et de visualisation est fournie dans le répertoire `/monitoring` et se lance via Docker Compose.
+
+#### Indicateurs Supervisés
+
+1. **Infrastructure (Physique)** :
+   - **Utilisation CPU** : Taux d'occupation global du CPU (%).
+   - **Utilisation RAM** : Pourcentage d'occupation de la mémoire vive (%).
+   - **Utilisation Disque** : Pourcentage d'espace utilisé sur le disque du projet (%).
+   - **Débit Réseau** : Trafic entrant (Recv) et sortant (Sent) cumulé et calculé en Mo/s.
+
+2. **Application (Performance)** :
+   - **Temps de Réponse API** : Moyenne glissante et répartition (Histogramme) du temps de traitement des requêtes HTTP (en secondes) par route.
+   - **Taux de Requêtes** : Nombre de requêtes par seconde (req/s) catégorisé par méthode et chemin d'API.
+   - **Taux d'Erreurs** : Volume d'anomalies serveur (HTTP >= 400) par route.
+   - **Utilisateurs Actifs** : Nombre unique d'utilisateurs authentifiés ayant interagi avec l'API sur une fenêtre glissante de 5 minutes.
+
+3. **Sécurité (Audit)** :
+   - **Failed Logins** : Échecs de connexion (mauvais mots de passe ou emails inexistants).
+   - **API Auth Errors** : Erreurs d'autorisation API (absence de token JWT, token expiré ou corrompu).
+
+#### Démarrage de la Stack
+
+Lancez Prometheus et Grafana en arrière-plan depuis la racine du projet :
+```bash
+docker-compose -f docker-compose.monitoring.yml up -d
+```
+
+- **Prometheus** est accessible sur [http://localhost:9090](http://localhost:9090).
+- **Grafana** est disponible sur [http://localhost:3000](http://localhost:3000) (identifiants par défaut: `admin` / `admin`).
+
+> [!TIP]
+> **Dashboard Auto-Provisionné** : Grafana est pré-configuré pour charger automatiquement la base de données Prometheus locale et importer directement le superbe tableau de bord **AutoML Studio - Supervision Temps Réel**. Tout fonctionne instantanément après le démarrage.
+
 ---
+
 
 ## Architecture
 
@@ -450,6 +499,10 @@ Fichier modèle : **`.env.example`** (copier vers `automl-backend/.env`).
 | `CORS_ORIGINS` | *(liste par défaut)* | Origines explicites |
 | `CORS_ALLOW_ORIGIN_REGEX` | `localhost:\d+` | Regex dev |
 | `REACT_APP_API_URL` | `http://localhost:8000` | URL API (frontend) |
+| `DATA_ENCRYPTION_KEY` | *(auto-générée)* | Clé Fernet pour le chiffrement des datasets |
+| `MAX_UPLOAD_SIZE` | `52428800` (50 Mo) | Taille maximale d'upload en octets |
+| `MAX_DATASET_ROWS` | `500000` | Nombre max de lignes autorisé par dataset |
+| `MAX_DATASET_COLS` | `500` | Nombre max de colonnes autorisé par dataset |
 
 ---
 

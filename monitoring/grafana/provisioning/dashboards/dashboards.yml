@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: 'AutoML Studio Dashboards'
+    orgId: 1
+    folder: 'AutoML Studio'
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards
